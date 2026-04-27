@@ -1,0 +1,42 @@
+Requirement already satisfied: numpy in /home/s252125/miniforge3/envs/brainnet/lib/python3.11/site-packages (2.4.3)
+Collecting scipy
+  Downloading scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (62 kB)
+Collecting nibabel
+  Downloading nibabel-5.4.2-py3-none-any.whl.metadata (8.9 kB)
+Collecting numba
+  Downloading numba-0.65.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.9 kB)
+Collecting meson-python
+  Downloading meson_python-0.19.0-py3-none-any.whl.metadata (2.1 kB)
+Collecting cython
+  Downloading cython-3.2.4-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (7.5 kB)
+Requirement already satisfied: wheel in /home/s252125/miniforge3/envs/brainnet/lib/python3.11/site-packages (0.46.3)
+Collecting importlib-resources>=5.12 (from nibabel)
+  Downloading importlib_resources-6.5.2-py3-none-any.whl.metadata (3.9 kB)
+Requirement already satisfied: packaging>=20 in /home/s252125/miniforge3/envs/brainnet/lib/python3.11/site-packages (from nibabel) (26.0)
+Collecting typing-extensions>=4.6 (from nibabel)
+  Downloading typing_extensions-4.15.0-py3-none-any.whl.metadata (3.3 kB)
+Collecting llvmlite<0.48,>=0.47.0dev0 (from numba)
+  Downloading llvmlite-0.47.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (5.0 kB)
+Collecting meson>=0.64.0 (from meson-python)
+  Downloading meson-1.10.2-py3-none-any.whl.metadata (1.8 kB)
+Collecting pyproject-metadata>=0.9.0 (from meson-python)
+  Downloading pyproject_metadata-0.11.0-py3-none-any.whl.metadata (6.4 kB)
+Downloading scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (35.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 35.3/35.3 MB 66.4 MB/s  0:00:00
+Downloading nibabel-5.4.2-py3-none-any.whl (3.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.3/3.3 MB 46.6 MB/s  0:00:00
+Downloading numba-0.65.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (3.7 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.7/3.7 MB 49.6 MB/s  0:00:00
+Downloading llvmlite-0.47.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (56.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 56.3/56.3 MB 57.0 MB/s  0:00:00
+Downloading meson_python-0.19.0-py3-none-any.whl (28 kB)
+Downloading cython-3.2.4-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (3.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.4/3.4 MB 75.2 MB/s  0:00:00
+Downloading importlib_resources-6.5.2-py3-none-any.whl (37 kB)
+Downloading meson-1.10.2-py3-none-any.whl (1.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.1/1.1 MB 60.8 MB/s  0:00:00
+Downloading pyproject_metadata-0.11.0-py3-none-any.whl (22 kB)
+Downloading typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+Installing collected packages: typing-extensions, scipy, pyproject-metadata, meson, llvmlite, importlib-resources, cython, numba, nibabel, meson-python
+
+Successfully installed cython-3.2.4 importlib-resources-6.5.2 llvmlite-0.47.0 meson-1.10.2 meson-python-0.19.0 nibabel-5.4.2 numba-0.65.0 pyproject-metadata-0.11.0 scipy-1.17.1 typing-extensions-4.15.0

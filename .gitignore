@@ -1,0 +1,12 @@
+*.pt
+*.npz
+*.png
+*.vtk
+__pycache__/
+*.pyc
+runs/
+spheres/
+vtk_output/
+*.pth
+checkpoint*
+
