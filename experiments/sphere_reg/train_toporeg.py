@@ -1,22 +1,3 @@
-"""Unsupervised coarse-to-fine spherical registration training with TopoReg.
-
-No sphere.reg ground-truth is required. The model samples subject and
-template sulcal-depth grids at the current sphere positions and optimizes
-their agreement together with geometric regularization.
-
-Outputs (saved to SAVE_DIR)
----------------------------
-    checkpoint_epoch_{N:03d}.pt        model weights + optimizer state
-    spheres/epoch_{N:03d}/
-        {dataset}_{subject}_{hemi}.sphere.reg   FreeSurfer geometry (predicted)
-        {dataset}_{subject}_{hemi}.sphere.input FreeSurfer geometry (input = identity)
-
-Usage
------
-    /home/s252125/miniforge3/envs/brainnet/bin/python \
-        -m experiments.sphere_reg.train_toporeg_unsupervised
-"""
-
 from pathlib import Path
 
 import nibabel as nib
@@ -27,7 +8,6 @@ from torch.utils.data import DataLoader, random_split
 import matplotlib.pyplot as plt
 
 from brainnet.networks.toporeg import TopoReg
-#from brainnet.networks.toporeg import TopoRegNative
 
 from experiments.sphere_reg.dataset import (
     SphereRegDataset,
@@ -36,54 +16,50 @@ from experiments.sphere_reg.dataset import (
 from experiments.sphere_reg.sulcal_loss import SulcalAlignmentLoss
 
 #############################################################################################
-from scipy.spatial import cKDTree
+# le due funzioni seguenti implementano una rotazione 3D random dei valori sulc, funzionando come augmentation dei dati
 
-def random_rotation_matrix() -> torch.Tensor:
-    x = np.random.uniform(size=3)
-    theta = 2 * np.pi * x[0]
-    phi   = 2 * np.pi * x[1]
-    z     = x[2]
-    V = np.array([np.cos(phi) * np.sqrt(z), np.sin(phi) * np.sqrt(z), np.sqrt(1 - z)])
-    H = np.eye(3) - 2 * np.outer(V, V)
-    R = H @ np.array([[np.cos(theta), np.sin(theta), 0],
-                       [-np.sin(theta), np.cos(theta), 0],
-                       [0, 0, 1]])
-    return torch.tensor(R, dtype=torch.float32)
+#from scipy.spatial import cKDTree
+#def random_rotation_matrix() -> torch.Tensor:
+#    x = np.random.uniform(size=3)
+#    theta = 2 * np.pi * x[0]
+#    phi   = 2 * np.pi * x[1]
+#    z     = x[2]
+#    V = np.array([np.cos(phi) * np.sqrt(z), np.sin(phi) * np.sqrt(z), np.sqrt(1 - z)])
+#    H = np.eye(3) - 2 * np.outer(V, V)
+#    R = H @ np.array([[np.cos(theta), np.sin(theta), 0],
+#                       [-np.sin(theta), np.cos(theta), 0],
+#                       [0, 0, 1]])
+#    return torch.tensor(R, dtype=torch.float32)
 
-def rotate_sulc(sulc: torch.Tensor, ico_verts: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
-    verts_np = ico_verts.cpu().numpy()
-    verts_rotated = (R.numpy() @ verts_np.T).T
-    tree = cKDTree(verts_np)
-    _, idx = tree.query(verts_rotated, k=1, workers=-1)
-    idx = torch.from_numpy(idx.astype(np.int64))
-    return sulc[:, :, idx]
+#def rotate_sulc(sulc: torch.Tensor, ico_verts: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
+#    verts_np = ico_verts.cpu().numpy()
+#    verts_rotated = (R.numpy() @ verts_np.T).T
+#    tree = cKDTree(verts_np)
+#    _, idx = tree.query(verts_rotated, k=1, workers=-1)
+#    idx = torch.from_numpy(idx.astype(np.int64))
+#    return sulc[:, :, idx]
 #############################################################################################
 
 
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
 DATA_ROOT  = "/projects/brainnet-data/sphere-reg"
 GRID_DIR   = "experiments/sphere_reg/fsaverage_grid"
-#DATASETS   = ["Buckner40"]
-DATASETS   = ["COBRE"]
+DATASETS   = ["Buckner40"]
+#DATASETS   = ["COBRE"]
 HEMI       = "lh"
 
 IN_ORDER   = 3   # coarsest scale
-OUT_ORDER  = 6  
+OUT_ORDER  = 5   
 MAX_ORDER  = 6    # topology hierarchy depth built inside TopoReg
 
 N_EPOCHS   = 30
 BATCH_SIZE = 1 #4
 ACCUM_STEPS = 4
-LR         = 5e-6
+LR         = 1e-3
 
 # Loss weights
 W_SULC   = 1.0    # sulcal depth alignment (the main training signal)
-W_AREA   = 0.1   # face-area regularisation
-W_METRIC = 0.01   # edge-length regularisation
+W_AREA   = 1.0   # face-area regularisation
+W_METRIC = 0.0   # edge-length regularisation
 
 # Saving
 SAVE_DIR   = "experiments/sphere_reg/runs/sulcal_reg"
@@ -92,9 +68,7 @@ N_SAVE     = 5    # how many validation subjects to save per checkpoint
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def surfaces_to_verts(out: dict, hemi: str) -> torch.Tensor:
     """Extract (B, 3, N) from TopoReg output {"sphere.reg": {hemi: Surface}}."""
@@ -112,9 +86,7 @@ def normalize_grid(grid: torch.Tensor) -> torch.Tensor:
     return (grid - mean) / std
 
 
-# ---------------------------------------------------------------------------
 # Sphere saving
-# ---------------------------------------------------------------------------
 
 def save_registered_spheres(
     model: TopoReg,
@@ -183,9 +155,7 @@ def save_registered_spheres(
 
 
 
-# ---------------------------------------------------------------------------
 # One epoch
-# ---------------------------------------------------------------------------
 
 def run_epoch(
     model: TopoReg,
@@ -266,9 +236,9 @@ def main():
     save_dir = Path(SAVE_DIR)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------------
+
     # Template sulcal depth (from pre-computed fsaverage spherical grid)
-    # ------------------------------------------------------------------
+  
     print("Loading template sulcal depth grid ...")
     template_grids = load_feature_grid_images(
         grid_dir=GRID_DIR,
@@ -277,9 +247,8 @@ def main():
     )
     print(f"  {HEMI}: shape={tuple(template_grids[HEMI].shape)}")
 
-    # ------------------------------------------------------------------
-    # Dataset — sphere_reg is loaded but not used (unsupervised)
-    # ------------------------------------------------------------------
+    # Dataset 
+
     dataset = SphereRegDataset(
         root_dir=DATA_ROOT,
         datasets=DATASETS,
@@ -297,9 +266,9 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_workers=0)
     val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-    # ------------------------------------------------------------------
+
     # Model
-    # ------------------------------------------------------------------
+
     model = TopoReg(
         in_order=IN_ORDER,
         out_order=OUT_ORDER,
@@ -307,7 +276,7 @@ def main():
         in_channels=1,
         encoder_channels=32,
         reg_channels=dict(encoder=[64, 64, 64, 64], decoder=[64, 64, 64]),
-        n_steps=2, ##########################
+        n_steps=5, ##########################
         sphere_radius=100.0,
     ).to(DEVICE)
 
@@ -332,14 +301,13 @@ def main():
         w_metric=W_METRIC,
     ).to(DEVICE)
 
-    # ------------------------------------------------------------------
+  
     # Optimizer
-    # ------------------------------------------------------------------
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
 
-    # ------------------------------------------------------------------
+  
     # Training loop
-    # ------------------------------------------------------------------
+   
 
     # ------------------- stampa loss plots ----------------------------
     train_total_hist = []
@@ -394,12 +362,12 @@ def main():
 
             # Save registered spheres for visual inspection
             save_registered_spheres(model, val_loader, template_grids, epoch, save_dir)
-            model.train()  # restore training mode
+            model.train()
 
 
-    # ------------------------------------------------------------------
+   
     # Plot losses
-    # ------------------------------------------------------------------
+  
     plt.figure(figsize=(10, 6))
     plt.plot(range(1, N_EPOCHS + 1), train_total_hist, label="train_total")
     plt.plot(val_epochs, val_total_hist, label="val_total")

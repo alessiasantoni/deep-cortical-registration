@@ -1,4 +1,4 @@
-"""Unsupervised sulcal-depth alignment loss for spherical registration."""
+
 import torch
 import torch.nn.functional as F
 from brainnet.mesh.surface import Surface
