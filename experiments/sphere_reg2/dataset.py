@@ -42,7 +42,8 @@ def cartesian_to_grid_coords(vertices: torch.Tensor) -> torch.Tensor:
     v_unit = F.normalize(vertices.float(), dim=1)
     x, y, z = v_unit[:, 0], v_unit[:, 1], v_unit[:, 2]
 
-    theta = torch.arccos(z.clamp(-1.0, 1.0))   # [0, pi]
+    #theta = torch.arccos(z.clamp(-1.0, 1.0))   # [0, pi]
+    theta = torch.arccos(z.clamp(-1.0 + 1e-6, 1.0 - 1e-6)) # edit to avoid nan in gradients 
     phi = torch.arctan2(y, x)                  # [-pi, pi]
 
     grid_x = phi / torch.pi                    # [-1, 1]
@@ -132,8 +133,7 @@ class SphereRegDataset(Dataset):
         ).float().unsqueeze(0)  # (1, N)
 
         verts, _ = nib.freesurfer.read_geometry(
-            #str(subj_dir / f"{self.hemi}.sphere.reg")
-            str(subj_dir / f"{self.hemi}.sphere")
+            str(subj_dir / f"{self.hemi}.sphere.reg")
         )
         sphere_reg = torch.tensor(verts.astype(np.float32)).T  # (3, N)
 
