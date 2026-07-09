@@ -10,23 +10,28 @@ from experiments.sphere_reg2.dataset import sample_grid_at_vertices
 # SALVATAGGIO SU LAPTOP: SOSTITUISCI CON LA DATA DELLA CARTELLA CHE SALVI
 """
 mkdir C:\\spheres_sulc_v2_20260513
-scp -r s252125@health-pcalc2:/home/s252125/my_project/experiments/sphere_reg2/evaluation_vtk/20260513_103949/* C:\\spheres_sulc_v2_20260513\\
+scp -r s252125@health-pcalc2:/home/s252125/my_project/experiments/sphere_reg2/evaluation_vtk/20260520_153436_multires/* C:\\spheres_sulc_v2_20260520\\
 """
 
 # ============== CONFIG ==============
-SUBJECTS = ["sub-0259", "sub-1297"]
+SUBJECTS = ["sub-018", "sub-029", "sub-030", "sub-033", "sub-037"]
 HEMI = "lh"
 #DATASET_NAME = "ADHD200"   # nome del dataset come appare nei file salvati
-DATASET_NAME = "OASIS3"   # nome del dataset come appare nei file salvati
+DATASET_NAME = "Buckner40"   # nome del dataset come appare nei file salvati
 
-EPOCH = 50
+EPOCH = 40
 #SUBSET = "train"   # "train" o "val"
 
 # === LIVELLO ICO della sfera predetta dal modello ===
 ICO_LEVEL = 3   # 3, 4, 5, o 6 — DEVE matchare ICO_OUT del training
 ORIG_ROOT = Path(f"/projects/brainnet-data/sphere-reg/{DATASET_NAME}")
-REG_ROOT = Path(f"/home/s252125/my_project/experiments/sphere_reg2/runs/20260513_103949/spheres/epoch_{EPOCH:03d}")
-OUT_DIR = Path("/home/s252125/my_project/experiments/sphere_reg2/evaluation_vtk/20260513_103949")
+
+REG_ROOT = Path(f"/home/s252125/my_project/experiments/sphere_reg2/runs/20260520_153436_multires/spheres/epoch_{EPOCH:03d}")
+
+# root da usare quando voglio salvare una sfera da TUTTE
+#REG_ROOT = Path(f"/home/s252125/my_project/experiments/sphere_reg2/runs/20260520_153436_multires/spheres_all")
+
+OUT_DIR = Path("/home/s252125/my_project/experiments/sphere_reg2/evaluation_vtk/20260520_153436_multires")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
