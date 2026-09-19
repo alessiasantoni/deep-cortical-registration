@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 
 from brainnet.mesh.topology import DeepSurferTopology
-from experiments.sphere_reg2.dataset import (
+from experiments.spherical_registration.dataset import (
     load_template_grid,
     sample_grid_at_vertices,
 )
@@ -26,16 +26,17 @@ SPHERE_RADIUS = 100.0
 
 # Folder with the predicted spheres on the TEST SET
 REG_ROOT = Path(
-    "/home/s252125/my_project/experiments/sphere_reg2/runs/precomputed_rot/precomp_test"
+    "/home/s252125/my_project/experiments/spherical_registration/evaluation/runs/ico6_full_test"
 )
 
 DATA_ROOT = Path("/projects/brainnet-data/sphere-reg")
 
 GRID_DIR = Path(
-    "/home/s252125/my_project/experiments/sphere_reg2/fsaverage_grid"
+    "/home/s252125/my_project/experiments/spherical_registration/fsaverage_grid"
 )
 
 OUT_CSV = REG_ROOT / "comparison_old_vs_new_full_testset.csv"
+
 
 TEMPLATE_SULC_STATS = {
     "lh": {"mean": -1.1523885e-08, "std": 0.59384775},

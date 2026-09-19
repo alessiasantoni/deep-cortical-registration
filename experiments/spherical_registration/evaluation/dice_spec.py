@@ -11,8 +11,8 @@ import nibabel as nib
 from scipy.spatial import cKDTree
 
 HEMI = "lh"
-FSAVERAGE_SPHERE = Path("experiments/sphere_reg2/fsaverage_aparc/lh.fsaverage.sphere")
-FSAVERAGE_ANNOT  = Path("experiments/sphere_reg2/fsaverage_aparc/lh.aparc.annot")
+FSAVERAGE_SPHERE = Path("experiments/spherical_registration/fsaverage_aparc/lh.fsaverage.sphere")
+FSAVERAGE_ANNOT  = Path("experiments/spherical_registration/fsaverage_aparc/lh.aparc.annot")
 DATA_ROOT = Path("/projects/brainnet-data/sphere-reg")
 
 NET_DIR = Path("/home/s252125/my_project/experiments/sphere_reg2/runs/precomputed_rot/precomp_test_FIXED2")

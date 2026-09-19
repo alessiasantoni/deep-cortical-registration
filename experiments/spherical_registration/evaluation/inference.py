@@ -11,8 +11,8 @@ import numpy as np
 import nibabel as nib
 from torch.utils.data import DataLoader
 
-from experiments.sphere_reg2.dataset import SphereRegDataset
-from experiments.sphere_reg2.network_rotation import SphereRegNet  # adjust the path if different
+from experiments.spherical_registration.dataset import SphereRegDataset
+from experiments.spherical_registration.network import SphereRegNet  # adjust the path if different
 
 # ============== CONFIG ==============
 CHECKPOINT_PATH = Path(
@@ -38,7 +38,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-GRID_PATH = "/home/s252125/my_project/experiments/sphere_reg2/fsaverage_grid/lh.white.features.npz"
+GRID_PATH = "/home/s252125/my_project/experiments/spherical_registration/fsaverage_grid/lh.white.features.npz"
 
 TEMPLATE_SULC_STATS = {
     "lh": {"mean": -1.1523885e-08, "std": 0.59384775},

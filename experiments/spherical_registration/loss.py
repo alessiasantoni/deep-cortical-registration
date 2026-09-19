@@ -11,7 +11,7 @@ SulcalAlignmentLoss combines these into a single weighted total loss.
 import torch
 import torch.nn.functional as F
 
-from experiments.sphere_reg2.dataset import sample_grid_at_vertices
+from experiments.spherical_registration.dataset import sample_grid_at_vertices
 
 
 def compute_signed_face_areas(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:

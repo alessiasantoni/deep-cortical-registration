@@ -25,8 +25,8 @@ import brainsynth.resources
 HEMI = "lh"
 N_VERTS_EXPECTED = 245762
 
-FSAVERAGE_SPHERE = Path("experiments/sphere_reg2/fsaverage_aparc/lh.fsaverage.sphere")
-FSAVERAGE_ANNOT  = Path("experiments/sphere_reg2/fsaverage_aparc/lh.aparc.annot")
+FSAVERAGE_SPHERE = Path("experiments/spherical_registration/fsaverage_aparc/lh.fsaverage.sphere")
+FSAVERAGE_ANNOT  = Path("experiments/spherical_registration/fsaverage_aparc/lh.aparc.annot")
 
 PRED_SPHERES_DIR = Path(
     "/home/s252125/my_project/experiments/sphere_reg2/runs/ico6_full_test"

@@ -10,7 +10,7 @@ from brainnet.modules.graph.layers import EdgeConvolutionBlock, EdgeConvolution
 from brainnet.modules.graph.unet import UNet
 from brainnet.mesh.surface import rotate
 
-from experiments.sphere_reg2.dataset import sample_grid_at_vertices
+from experiments.spherical_registration.dataset import sample_grid_at_vertices
  
 
 def solve_ode_euler_rotate(h, v, dv):
