@@ -1,6 +1,6 @@
 # Spherical registration
 
-## Ongoing master thesis project
+### Ongoing master thesis project carried out at Denmark Technical University and Politecnico di Milano.
 
 Coarse-to-fine deep-learning registration of cortical surfaces onto a template sphere (fsaverage), driven by sulcal depth (sulc). For each subject the network deforms an initial sphere so that the subject's sulc matches the template sulc, while keeping the mesh well-behaved (no folded triangles, metric close to the white-matter surface). Results are compared against FreeSurfer's `sphere.reg`.
 
