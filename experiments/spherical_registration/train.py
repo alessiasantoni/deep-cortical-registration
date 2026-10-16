@@ -11,6 +11,7 @@ plot each loss component continuously across levels.
 
 from pathlib import Path
 
+import argparse
 import csv
 import nibabel as nib
 import numpy as np
@@ -67,7 +68,7 @@ COUNT_TEMPERATURE = 1.0
 FOLDED_REDUCTION = "sum"
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-SAVE_DIR = f"experiments/sphere_reg2/new_network/ico3_train"
+OUT_DIR = "runs"   # default; can be changed with --out_dir
 SAVE_EVERY = 5
 N_SAVE     = 5
 
@@ -270,10 +271,15 @@ def run_epoch(model, loader, criterion, template_grid, template_sphere_init,
 # ============================================================
 
 def main():
-    print(f"Device: {DEVICE}")
-    print(f"Save dir: {SAVE_DIR}")
+    parser = argparse.ArgumentParser(description="Train the ico3 network.")
+    parser.add_argument("--out_dir", default=OUT_DIR,
+                        help="root folder for outputs; results go in <out_dir>/ico3_train")
+    args = parser.parse_args()
 
-    save_dir = Path(SAVE_DIR)
+    save_dir = Path(args.out_dir) / "ico3_train"
+    print(f"Device: {DEVICE}")
+    print(f"Save dir: {save_dir}")
+
     save_dir.mkdir(parents=True, exist_ok=True)
 
     template_grid = load_template_grid(GRID_DIR, HEMI).to(DEVICE)

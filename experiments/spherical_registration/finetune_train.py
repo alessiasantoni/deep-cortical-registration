@@ -26,6 +26,15 @@ nohup /home/s252125/miniforge3/envs/brainnet/bin/python3 -m experiments.spherica
   > experiments/sphere_reg2/new_network/log_finetune_ico4.txt 2>&1 &
 disown
 
+# default: salva in runs/ico3_train, runs/ico4_train, ...
+python -m experiments.spherical_registration.train
+python -m experiments.spherical_registration.finetune_train --level 4
+
+# sul cluster, su /projects:
+python -m experiments.spherical_registration.train --out_dir /projects/thesis-alessia
+python -m experiments.spherical_registration.finetune_train --level 4 --out_dir /projects/thesis-alessia
+
+
 """
 
 import argparse
@@ -61,8 +70,7 @@ DATASETS = ["ABIDE", "ADHD200", "ADNI3", "AIBL", "Buckner40",
             "Chinese-HCP", "HCP", "OASIS3", "ISBI2015"]
 HEMI       = "lh"
 
-SAVE_ROOT = Path("experiments/sphere_reg2/new_network")
-ICO3_CHECKPOINT = SAVE_ROOT / "ico3_train" / "best_val_total.pt"
+SAVE_ROOT = Path("runs")   # default; can be changed with --out_dir
 
 ICO_IN     = 3
 BASE_CH    = 32
@@ -107,8 +115,6 @@ def stage_dir(level: int) -> Path:
 
 
 def previous_checkpoint(level: int) -> Path:
-    if level == ICO_IN + 1:
-        return ICO3_CHECKPOINT
     return stage_dir(level - 1) / "best_val_total.pt"
 
 
@@ -548,10 +554,14 @@ def train_level(level, train_loader, val_loader, template_grid, template_sphere_
 # ============================================================
 
 def main():
+    global SAVE_ROOT
     parser = argparse.ArgumentParser(description="Fine-tune one ico level (4, 5 or 6).")
     parser.add_argument("--level", type=int, required=True, choices=sorted(FINE_N_ITER),
                         help="level to fine-tune; starts from the previous level's best checkpoint")
+    parser.add_argument("--out_dir", default=str(SAVE_ROOT),
+                        help="root folder for outputs; results go in <out_dir>/ico<level>_train")
     args = parser.parse_args()
+    SAVE_ROOT = Path(args.out_dir)
 
     print(f"Device: {DEVICE}")
 

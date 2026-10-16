@@ -1,10 +1,15 @@
 """
-Comparison old (FreeSurfer) vs new (model): MSE, Pearson correlation,
-and folding (number of triangles + area), on ALL subjects of the full
-TEST SET, all datasets together.
+Comparison FreeSurfer vs JOSA vs new (model): MSE, Pearson correlation,
+and folding (number of triangles + area), on all the predicted spheres
+found in a folder (default: the full TEST SET, all datasets together).
+
+Usage (from the repository root, after inference.py):
+  python -m experiments.spherical_registration.evaluation.statistics --run_dir runs/ico6_train
+Reads <run_dir>/test_predictions (or --pred_dir), writes <run_dir>/statistics/statistics.csv.
 """
 
 from pathlib import Path
+import argparse
 import csv
 
 import numpy as np
@@ -17,31 +22,19 @@ from experiments.spherical_registration.dataset import (
     load_template_grid,
     sample_grid_at_vertices,
 )
+from experiments.spherical_registration.finetune_train import (
+    DATA_ROOT, GRID_DIR, HEMI, SPHERE_RADIUS, standardize_template_grid,
+)
 
 
-HEMI = "lh"
 MAX_ICO_LEVEL = 6   # builds topologies up to the maximum expected level
 
-SPHERE_RADIUS = 100.0
-
-# Folder with the predicted spheres on the TEST SET
-REG_ROOT = Path(
-    "/home/s252125/my_project/experiments/spherical_registration/evaluation/runs/ico6_full_test"
-)
-
-DATA_ROOT = Path("/projects/brainnet-data/sphere-reg")
-
-GRID_DIR = Path(
-    "/home/s252125/my_project/experiments/spherical_registration/fsaverage_grid"
-)
-
-OUT_CSV = REG_ROOT / "comparison_old_vs_new_full_testset.csv"
-
-
-TEMPLATE_SULC_STATS = {
-    "lh": {"mean": -1.1523885e-08, "std": 0.59384775},
-    "rh": {"mean": -4.1938106e-09, "std": 0.5924748},
+# Registrations compared against the template, in output order: name -> file in derivatives/
+REFERENCE_SPHERES = {
+    "fs": f"{HEMI}.sphere.reg.freesurfer",
+    "josa": f"{HEMI}.sphere.reg.josa",
 }
+METHODS = list(REFERENCE_SPHERES) + ["new"]
 
 
 def normalize_sulc(x):
@@ -112,18 +105,36 @@ def parse_dataset_subject(fname: str, hemi: str):
     return dataset, subject
 
 
-def main():
-    print(f"REG_ROOT = {REG_ROOT}")
-    print(f"OUT_CSV  = {OUT_CSV}")
+def load_sphere(path, n_verts):
+    """(1, 3, N) sphere of radius SPHERE_RADIUS, cut to the first n_verts vertices."""
+    verts, _ = nib.freesurfer.read_geometry(str(path))
+    verts = torch.from_numpy(verts[:n_verts].astype(np.float32).T).unsqueeze(0)
+    return F.normalize(verts, dim=1) * SPHERE_RADIUS
 
-    if not REG_ROOT.exists():
-        raise RuntimeError(f"REG_ROOT does not exist: {REG_ROOT}")
+
+def main():
+    parser = argparse.ArgumentParser(description="FreeSurfer vs JOSA vs model: MSE, correlation, folding.")
+    parser.add_argument("--run_dir", default="runs/ico6_train",
+                        help="run folder; results go in <run_dir>/statistics")
+    parser.add_argument("--pred_dir", default=None,
+                        help="folder with the predicted spheres (default: <run_dir>/test_predictions)")
+    args = parser.parse_args()
+
+    reg_root = Path(args.pred_dir) if args.pred_dir else Path(args.run_dir) / "test_predictions"
+    out_csv = Path(args.run_dir) / "statistics" / "statistics.csv"
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"Predictions: {reg_root}")
+    print(f"Output CSV : {out_csv}")
+
+    if not reg_root.exists():
+        raise RuntimeError(f"Prediction folder does not exist: {reg_root}")
 
     # Discovers ALL subjects (all datasets) from the spheres present
     pattern = f"*_{HEMI}.sphere.reg"
-    pred_files = sorted(REG_ROOT.glob(pattern))
+    pred_files = sorted(reg_root.glob(pattern))
 
-    print(f"\nFound {len(pred_files)} predicted spheres in {REG_ROOT}")
+    print(f"\nFound {len(pred_files)} predicted spheres in {reg_root}")
     if len(pred_files) == 0:
         raise RuntimeError(f"No spheres found matching pattern: {pattern}")
 
@@ -134,11 +145,10 @@ def main():
         print(f"  ico={level}: {topologies[level].n_vertices} vertices, "
               f"{topologies[level].faces.shape[0]} faces")
 
-    #  Template grid 
+    #  Template grid
     print("\nLoading template grid")
-    template_grid_full = load_template_grid(str(GRID_DIR), HEMI)
-    stats = TEMPLATE_SULC_STATS[HEMI]
-    template_grid_full = (template_grid_full - stats["mean"]) / stats["std"]
+    template_grid_full = load_template_grid(GRID_DIR, HEMI)
+    template_grid_full = standardize_template_grid(template_grid_full, HEMI)
     template_grid_full = template_grid_full.unsqueeze(0)  # (1, 1, H, W)
 
     rows = []
@@ -148,13 +158,15 @@ def main():
 
     for i, model_path in enumerate(pred_files):
         dataset, sub = parse_dataset_subject(model_path.name, HEMI)
-        sub_dir = DATA_ROOT / dataset / sub
+        deriv_dir = Path(DATA_ROOT) / dataset / sub / "derivatives"
 
-        old_path = sub_dir / "derivatives" / f"{HEMI}.sphere.reg.freesurfer"
-        sulc_path = sub_dir / "derivatives" / f"{HEMI}.sulc"
+        sphere_paths = {m: deriv_dir / name for m, name in REFERENCE_SPHERES.items()}
+        sphere_paths["new"] = model_path
+        sulc_path = deriv_dir / f"{HEMI}.sulc"
 
-        if not old_path.exists():
-            skipped.append((dataset, sub, "no old (FreeSurfer) sphere"))
+        missing = [m for m, p in sphere_paths.items() if not p.exists()]
+        if missing:
+            skipped.append((dataset, sub, f"no {missing[0]} sphere"))
             continue
         if not sulc_path.exists():
             skipped.append((dataset, sub, "no sulc"))
@@ -164,74 +176,54 @@ def main():
             print(f"  [{i+1}/{len(pred_files)}] {dataset}/{sub}")
 
         #  Detects resolution from the file already saved by the model
-        model_verts_full, _ = nib.freesurfer.read_geometry(str(model_path))
-        n_verts_level = model_verts_full.shape[0]
+        n_verts_level = nib.freesurfer.read_geometry(str(model_path))[0].shape[0]
         ico_level = detect_ico_level(n_verts_level, topologies)
         faces = topologies[ico_level].faces.long()
 
-        #  Load sulc 
+        #  Load sulc
         sulc_full = nib.freesurfer.read_morph_data(str(sulc_path))
         sulc = sulc_full[:n_verts_level].astype(np.float32).copy()
         sulc_t = torch.from_numpy(sulc).float().unsqueeze(0).unsqueeze(0)  # (1,1,N)
         sulc_t = normalize_sulc(sulc_t)
 
-        #  Load old (FreeSurfer) sphere 
-        old_verts_full, _ = nib.freesurfer.read_geometry(str(old_path))
-        old_verts = old_verts_full[:n_verts_level].astype(np.float32).copy()
-        old_t = torch.from_numpy(old_verts.T).float().unsqueeze(0)  # (1,3,N)
-        old_t = F.normalize(old_t, dim=1) * SPHERE_RADIUS
-
-        #  Load model sphere 
-        model_verts = model_verts_full[:n_verts_level].astype(np.float32).copy()
-        model_t = torch.from_numpy(model_verts.T).float().unsqueeze(0)
-        model_t = F.normalize(model_t, dim=1) * SPHERE_RADIUS
-
-        #  Sample template sulc ====
-        sulc_old = sample_grid_at_vertices(template_grid_full, old_t)
-        sulc_new = sample_grid_at_vertices(template_grid_full, model_t)
-
-        #  MSE 
-        mse_old = torch.nn.functional.mse_loss(sulc_t, sulc_old).item()
-        mse_new = torch.nn.functional.mse_loss(sulc_t, sulc_new).item()
-
-        #  Correlation
-        corr_old = pearson_corr(sulc_t, sulc_old)
-        corr_new = pearson_corr(sulc_t, sulc_new)
-
-        #  Folding (count + area)
-        folded_old, folded_old_perc, area_folded_old, perc_area_folded_old = \
-            count_folded_with_area(old_t, faces)
-        folded_new, folded_new_perc, area_folded_new, perc_area_folded_new = \
-            count_folded_with_area(model_t, faces)
-
-        rows.append({
-            "dataset": dataset,
-            "subject": sub,
-            "ico_level": ico_level,
-            "mse_fs": mse_old,
-            "mse_new": mse_new,
-            "corr_fs": corr_old,
-            "corr_new": corr_new,
-            "folded_fs": folded_old,
-            "folded_new": folded_new,
-            "folded_fs_%": folded_old_perc,
-            "folded_new_%": folded_new_perc,
-            "area_folded_fs_%": perc_area_folded_old,
-            "area_folded_new_%": perc_area_folded_new,
-        })
+        row = {"dataset": dataset, "subject": sub, "ico_level": ico_level}
+        metrics = {}
+        for m, path in sphere_paths.items():
+            sphere = load_sphere(path, n_verts_level)
+            sulc_template = sample_grid_at_vertices(template_grid_full, sphere)
+            n_folded, perc_folded, _, perc_area_folded = count_folded_with_area(sphere, faces)
+            metrics[m] = {
+                "mse": F.mse_loss(sulc_t, sulc_template).item(),
+                "corr": pearson_corr(sulc_t, sulc_template),
+                "folded": n_folded,
+                "folded_%": perc_folded,
+                "area_folded_%": perc_area_folded,
+            }
+        # Column order: mse_fs, mse_josa, mse_new, corr_fs, ..., area_folded_new_%
+        for m in METHODS:
+            row[f"mse_{m}"] = metrics[m]["mse"]
+        for m in METHODS:
+            row[f"corr_{m}"] = metrics[m]["corr"]
+        for m in METHODS:
+            row[f"folded_{m}"] = metrics[m]["folded"]
+        for m in METHODS:
+            row[f"folded_{m}_%"] = metrics[m]["folded_%"]
+        for m in METHODS:
+            row[f"area_folded_{m}_%"] = metrics[m]["area_folded_%"]
+        rows.append(row)
 
     if len(rows) == 0:
-        raise RuntimeError("No rows computed. Check REG_ROOT and paths.")
+        raise RuntimeError("No rows computed. Check --run_dir / --pred_dir and the data paths.")
 
-    #  Save CSV 
-    with open(OUT_CSV, "w", newline="") as f:
+    #  Save CSV
+    with open(out_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"\nSaved CSV to: {OUT_CSV}")
+    print(f"\nSaved CSV to: {out_csv}")
 
-    #  Skipped subjects 
+    #  Skipped subjects
     if skipped:
         print(f"\n=== SKIPPED ({len(skipped)}) ===")
         for dataset, sub, reason in skipped[:20]:
@@ -239,12 +231,13 @@ def main():
         if len(skipped) > 20:
             print(f"  ... and {len(skipped)-20} more")
 
-    #  Statistics 
+    #  Statistics
     print(f"\n=== STATISTICS ({len(rows)} subjects) ===")
     print(f"{'metric':<18} {'mean':>10} {'std':>10} {'min':>10} {'max':>10}")
     print("-" * 65)
-    for key in ["mse_fs", "mse_new", "corr_fs", "corr_new",
-                "folded_fs_%", "folded_new_%", "area_folded_fs_%", "area_folded_new_%"]:
+    keys = ([f"mse_{m}" for m in METHODS] + [f"corr_{m}" for m in METHODS]
+            + [f"folded_{m}_%" for m in METHODS] + [f"area_folded_{m}_%" for m in METHODS])
+    for key in keys:
         values = [r[key] for r in rows]
         print(f"{key:<18} "
               f"{np.mean(values):>10.4f} "

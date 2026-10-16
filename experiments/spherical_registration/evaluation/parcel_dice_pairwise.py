@@ -1,12 +1,20 @@
 """
-Pairwise comparison, S3Reg/Zhao et al. style, on YOUR real test subjects
+Pairwise comparison, on real test subjects
 (2-3 datasets of choice): Dice (shared fsaverage atlas, transferred via
 each registration), MAE and correlation (subject's sulc, already on
 canonical indexing -- no resampling needed).
 Reuses the spheres ALREADY predicted by the network (no new inference).
+
+Usage (from the repository root, after inference.py):
+  python -m experiments.spherical_registration.evaluation.parcel_dice_pairwise --run_dir runs/ico6_train
+Reads <run_dir>/test_predictions, writes <run_dir>/dice_pairwise/.
+
+python -m experiments.spherical_registration.evaluation.parcel_dice_pairwise --run_dir runs/ico6_train
+
 """
 
 from pathlib import Path
+import argparse
 import itertools
 import json
 
@@ -15,6 +23,7 @@ import torch
 import nibabel as nib
 from scipy.spatial import cKDTree
 from scipy.stats import wilcoxon, pearsonr
+import brainsynth.resources
 
 # ============== CONFIG ==============
 HEMI = "lh"
@@ -22,22 +31,15 @@ DATA_ROOT = Path("/projects/brainnet-data/sphere-reg")
 SPLIT_DIR = Path("/projects/brainnet-data/subject_splits")
 BAD_SURFACES = SPLIT_DIR / "bad_surfaces.json"
 
-# --- Folder with the spheres ALREADY predicted by the network on the test set ---
-PRED_SPHERES_DIR = Path(
-    "/home/s252125/my_project/experiments/sphere_reg2/new_network/ico6_atypicality_new/test_predictions"
-)
-
-FSAVERAGE_SPHERE = Path("/software/freesurfer/8.2.0/subjects/fsaverage/surf/lh.sphere.reg")
-FSAVERAGE_ANNOT = Path("/software/freesurfer/8.2.0/subjects/fsaverage/label/lh.aparc.annot")
+# fsaverage aparc resampled on the brainsynth template mesh: its labels are
+# indexed like the vertices of the template sphere.reg, so it must be paired with that sphere
+FSAVERAGE_ANNOT = Path(f"experiments/spherical_registration/fsaverage_aparc/{HEMI}.aparc.annot")
 
 # --- Choose here the 2-3 datasets you want to test ---
 DATASETS = ["OASIS3", "HCP"]
 N_MAX_PER_DATASET = 30
 
-OUT_DIR = Path(
-    "/home/s252125/my_project/experiments/sphere_reg2/new_network/dice_pair2"
-)
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+PRED_SPHERES_DIR = None   # set in main() from --run_dir
 # ====================================
 
 
@@ -119,8 +121,20 @@ def process_subject(dataset, subject, fsavg_sphere, fsavg_labels):
 
 
 def main():
-    fsavg_sphere, _ = nib.freesurfer.read_geometry(str(FSAVERAGE_SPHERE))
+    global PRED_SPHERES_DIR
+    parser = argparse.ArgumentParser(description="Pairwise Dice / MAE / correlation, network vs FreeSurfer.")
+    parser.add_argument("--run_dir", default="runs/ico6_train",
+                        help="folder containing test_predictions/ (written by inference.py)")
+    args = parser.parse_args()
+
+    run_dir = Path(args.run_dir)
+    PRED_SPHERES_DIR = run_dir / "test_predictions"
+    out_dir = run_dir / "dice_pairwise"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    fsavg_sphere = brainsynth.resources.Template().load_surface(HEMI, "sphere.reg")["vertices"].numpy()
     fsavg_labels, _, _ = nib.freesurfer.read_annot(str(FSAVERAGE_ANNOT))
+    assert fsavg_sphere.shape[0] == fsavg_labels.shape[0], "atlas and template sphere do not match"
 
     all_subjects = []
     for dataset in DATASETS:
@@ -169,8 +183,8 @@ def main():
         print(f"    FreeSurfer: {arr_fs.mean():.4f} +/- {arr_fs.std():.4f}")
         print(f"    Wilcoxon p={p:.6f}   ({n_wins}/{n_pairs} pairs in my favor)\n")
 
-    np.savez(OUT_DIR / "s3reg_style_real_data.npz", **{k: np.array(v) for k, v in rows.items()})
-    print(f"Saved -> {OUT_DIR / 's3reg_style_real_data.npz'}")
+    np.savez(out_dir / "s3reg_style_real_data.npz", **{k: np.array(v) for k, v in rows.items()})
+    print(f"Saved -> {out_dir / 's3reg_style_real_data.npz'}")
 
 
 if __name__ == "__main__":

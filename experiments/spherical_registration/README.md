@@ -19,13 +19,13 @@ spherical_registration/
 ├── train.py              ico3 training from scratch
 ├── finetune_train.py     one fine level per run (--level 4 | 5 | 6)
 ├── fsaverage_grid/       template sulc grid (.npz)
-├── fsaverage_aparc/      fsaverage sphere and aparc / DKT annotations
+├── fsaverage_aparc/      fsaverage aparc annotation on the brainsynth template mesh
 └── evaluation/
-    ├── inference.py            predicted spheres for the test set (.sphere.reg)
-    ├── statistics.py           mine vs FreeSurfer: MSE, correlation, folding
-    ├── parcel_dice.py          Dice of the aparc parcellation, FreeSurfer as reference
+    ├── inference.py            predicted spheres for one split (.sphere.reg)
+    ├── statistics.py           mine vs FreeSurfer vs JOSA: MSE, correlation, folding
+    ├── parcel_dice.py          Dice of the aparc parcellation (mine and JOSA), FreeSurfer as reference
+    ├── hausdorff_boundaries.py boundary distances (HD90, HD100, MBD) of the parcellations vs FreeSurfer
     ├── parcel_dice_pairwise.py pairwise Dice / MAE / correlation on a few datasets
-    ├── dice_spec.py            Dice of selected regions (precentral, postcentral) for outliers
     └── outlier.py              VTK export of outlier subjects for ParaView
 ```
 
@@ -33,14 +33,14 @@ spherical_registration/
 
 - The `brainnet`, `brainsynth` and `cortech` packages from this repository, plus `torch`, `nibabel`, `numpy`, `scipy`, `matplotlib`.
 - The dataset under `/projects/brainnet-data/sphere-reg`, and the subject splits and `bad_surfaces.json` under `/projects/brainnet-data/subject_splits`.
-- For parcel Dice, the FreeSurfer 8.2.0 fsaverage subject (`parcel_dice_pairwise.py` reads it from `/software/freesurfer/8.2.0/subjects/fsaverage`).
+- For parcel Dice, `fsaverage_aparc/{hemi}.aparc.annot` is the fsaverage aparc resampled onto the brainsynth template mesh: its labels follow the vertex order of the template `sphere.reg` (loaded through `brainsynth.resources.Template`), so always pair it with that sphere.
 
 ## Usage
 
 Run everything from the project root so that the `experiments.spherical_registration` imports resolve.
 
 ```bash
-# 1. ico3 from scratch
+# 1. ico3 from scratch -> runs/ico3_train
 python -m experiments.spherical_registration.train
 
 # 2. fine levels, in order; each starts from the previous level's best checkpoint
@@ -48,16 +48,29 @@ python -m experiments.spherical_registration.finetune_train --level 4
 python -m experiments.spherical_registration.finetune_train --level 5
 python -m experiments.spherical_registration.finetune_train --level 6
 
-# 3. evaluation (scripts are configured through the constants at the top of each file)
-python -m experiments.spherical_registration.evaluation.inference
-python -m experiments.spherical_registration.evaluation.statistics
-python -m experiments.spherical_registration.evaluation.parcel_dice
+# 3. evaluation of one run
+python -m experiments.spherical_registration.evaluation.inference --run_dir runs/ico6_train
+python -m experiments.spherical_registration.evaluation.statistics --run_dir runs/ico6_train
+python -m experiments.spherical_registration.evaluation.parcel_dice --run_dir runs/ico6_train
+python -m experiments.spherical_registration.evaluation.hausdorff_boundaries --run_dir runs/ico6_train
+python -m experiments.spherical_registration.evaluation.outlier --run_dir runs/ico6_train
+python -m experiments.spherical_registration.evaluation.parcel_dice_pairwise --run_dir runs/ico6_train
+```
+
+Outputs of a run all live under its folder:
+
+```
+runs/ico6_train/
+├── best_val_total.pt
+├── test_predictions/        inference.py
+├── statistics/              statistics.py
+├── parcel_dice/             parcel_dice.py (+ hausdorff_*.csv from hausdorff_boundaries.py)
+│   └── outlier_vtk/         outlier.py
+└── dice_pairwise/           parcel_dice_pairwise.py
 ```
 
 Training writes, for each level: `best_val_total.pt`, `loss_per_step.csv`, `loss_history.csv`, loss plots and sample spheres per epoch. The per-step CSVs share one schema (with an `ico_level` column), so the four levels can be concatenated to plot each loss component across levels.
 
 ## Configuration
 
-There are no command-line configs apart from `--level`: hyperparameters, loss weights and paths are constants in the `CONFIG` block of each script.
-
-Some of these paths still point to `experiments/sphere_reg2/` (`runs/`, `new_network/`) for checkpoints and outputs. Update them if you keep results elsewhere. `finetune_train.py` reads the ico3 checkpoint from `SAVE_ROOT / "ico3_train"`, which is where `train.py` writes it, so keep `SAVE_DIR` in `train.py` and `SAVE_ROOT` in `finetune_train.py` consistent.
+Hyperparameters and loss weights are constants in the `CONFIG` block of each script. Output locations are set from the command line: `--out_dir` for `train.py` and `finetune_train.py` (default `runs/`, results in `<out_dir>/ico<level>_train`), `--run_dir` for the evaluation scripts, which read `<run_dir>/test_predictions` unless `--pred_dir` points elsewhere (e.g. predictions on all subjects of the unseen datasets). `finetune_train.py --level N` starts from `<out_dir>/ico<N-1>_train/best_val_total.pt`, so use the same `--out_dir` for all levels.
