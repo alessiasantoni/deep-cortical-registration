@@ -85,7 +85,7 @@ Training writes, for each level: `best_val_total.pt`, `loss_per_step.csv`, `loss
 
 ## Configuration
 
-Hyperparameters and loss weights are constants in the `CONFIG` block of `train.py` and `finetune_train.py`. Output locations are set from the command line: `--out_dir` for `train.py` and `finetune_train.py` (default `runs/`, results in `<out_dir>/ico<level>_train`), `--run_dir` for the evaluation scripts, which read `<run_dir>/test_predictions` unless `--pred_dir` points elsewhere. `finetune_train.py --level N` starts from `<out_dir>/ico<N-1>_train/best_val_total.pt`, so use the same `--out_dir` for all levels.
+Hyperparameters and loss weights are constants at the top of `train.py` and `finetune_train.py`. Output locations are set from the command line: `--out_dir` for `train.py` and `finetune_train.py` (default `runs/`, results in `<out_dir>/ico<level>_train`), `--run_dir` for the evaluation scripts, which read `<run_dir>/test_predictions` unless `--pred_dir` points elsewhere. `finetune_train.py --level N` starts from `<out_dir>/ico<N-1>_train/best_val_total.pt`, so use the same `--out_dir` for all levels.
 
 ## Reproducibility
 
