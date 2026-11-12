@@ -1,17 +1,11 @@
 """
-Runs a trained checkpoint on every subject of a split and saves the
-registered spheres as FreeSurfer .sphere.reg files.
+Registers every subject of a split with a trained checkpoint and writes the spheres
+to <run_dir>/<split>_predictions/<dataset>_<subject>_<hemi>.sphere.reg
 
-The model is rebuilt from the checkpoint itself: the finest level is read
-from the weights, the ico3 depth from "val_reference_iter", and the depths of
-the finer levels from FINE_N_ITER in finetune_train.py.
+The network is rebuilt from the checkpoint: the last level from the weights, the
+ico3 iterations from val_reference_iter, the other ones from FINE_N_ITER.
 
-Usage (from the repository root):
   python -m experiments.spherical_registration.evaluation.inference --run_dir runs/ico6_train
-Output: <run_dir>/<split>_predictions/<dataset>_<subject>_<hemi>.sphere.reg
-
-python -m experiments.spherical_registration.evaluation.inference --run_dir runs/ico6_train
-
 """
 
 import argparse
@@ -30,7 +24,7 @@ from experiments.spherical_registration.finetune_train import (
     get_template_sphere_init, normalize, standardize_template_grid,
 )
 
-# Includes COBRE and MCIC, which have only a test split (unseen during training)
+# COBRE and MCIC only have a test split, the network never saw them
 DATASETS = [
     "ABIDE", "ADHD200", "ADNI3", "AIBL", "Buckner40",
     "Chinese-HCP", "COBRE", "HCP", "ISBI2015", "MCIC", "OASIS3",
@@ -39,6 +33,7 @@ DATASETS = [
 
 def build_model_from_checkpoint(ckpt):
     state_dict = ckpt["model_state_dict"]
+    # keys look like "unets.6.<...>": the highest number is the last level
     levels = sorted({int(k.split(".")[1]) for k in state_dict if k.startswith("unets.")})
     ico_out = levels[-1]
     n_iter = [ckpt["val_reference_iter"]] + [FINE_N_ITER[l] for l in range(ICO_IN + 1, ico_out + 1)]
@@ -65,8 +60,7 @@ def main():
     out_dir = run_dir / f"{args.split}_predictions"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Device: {DEVICE}")
-    print(f"Loading checkpoint: {ckpt_path}")
+    print(f"{ckpt_path} on {DEVICE}")
     ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
     model = build_model_from_checkpoint(ckpt)
     faces_np = model.topologies[model.ico_out].faces.cpu().numpy().astype(np.int32)
@@ -99,7 +93,7 @@ def main():
                 if saved % 50 == 0:
                     print(f"  saved {saved}/{len(dataset)}")
 
-    print(f"Done. {saved} spheres saved to {out_dir}")
+    print(f"{saved} spheres in {out_dir}")
 
 
 if __name__ == "__main__":

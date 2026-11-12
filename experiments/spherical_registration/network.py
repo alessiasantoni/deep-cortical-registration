@@ -1,5 +1,6 @@
 """
-Network with rotations of dr vector, to keep points on the sphere without needing a separate projection step.
+SphereRegNet: coarse-to-fine registration on the sphere. The predicted vector of
+each vertex is applied as a rotation, so the vertices never leave the sphere.
 """
 
 import torch
@@ -11,25 +12,20 @@ from brainnet.modules.graph.unet import UNet
 from brainnet.mesh.surface import rotate
 
 from experiments.spherical_registration.dataset import sample_grid_at_vertices
- 
+
 
 def solve_ode_euler_rotate(h, v, dv):
-    """Rotate v about the (normalized) vector dv by an angle of h * |dv|.
-
-    v, dv : (B, 3, N)
-    h     : float (step size)
-
-    Returns : (B, 3, N) rotated on the sphere (radius preserved by construction).
-    """
-    v = v.mT       # (B, N, 3)
-    dv = dv.mT     # (B, N, 3)
+    """One Euler step done as a rotation: v (B, 3, N) is rotated around the direction
+    of dv by an angle h * |dv|. The radius does not change."""
+    v = v.mT
+    dv = dv.mT
     theta = torch.linalg.vector_norm(dv, dim=2, keepdim=True, dtype=dv.dtype)
     k = dv / (theta + 1e-8)
-    return rotate(v, k, h * theta, normalize=False).mT  # (B, 3, N)
+    return rotate(v, k, h * theta, normalize=False).mT
 
 
 class SphereRegNet(torch.nn.Module):
-    """Coarse-to-fine spherical registration."""
+    """One U-Net + deformation head per level, from ico_in to ico_out."""
 
     def __init__(
         self,
@@ -63,6 +59,7 @@ class SphereRegNet(torch.nn.Module):
 
         for order in self.active_orders:
             topos = self.topologies[: order + 1]
+            # at most 4 levels in each U-Net, otherwise the fine ones get too many parameters
             depth = min(4, order + 1)
 
             unet = UNet(
@@ -76,23 +73,22 @@ class SphereRegNet(torch.nn.Module):
             )
             self.unets[str(order)] = unet
 
+            # small init: the first steps should barely move the vertices
             self.deforms[str(order)] = EdgeConvolution(
                 in_channels=unet.out_ch,
                 out_channels=3,
                 reduce_index=topos[-1].conv_index_reduce,
                 gather_index=topos[-1].conv_index_gather,
                 bias=False,
-                init_values=0.01, 
-
+                init_values=0.01,
             )
 
-        print("Topology check:")
+        print("Topologies:")
         for order in range(self.ico_out + 1):
             n = self.topologies[order].n_vertices
-            print(f"  topologies[{order}] has {n} vertices")
+            print(f"  ico{order}: {n} vertices")
 
     def project_to_sphere(self, r: torch.Tensor) -> torch.Tensor:
-        """Project (B, 3, N) onto sphere, robust to vectors near zero."""
         norm = r.norm(dim=1, keepdim=True).clamp(min=1e-6)
         return (r / norm) * self.sphere_radius
 
@@ -103,11 +99,7 @@ class SphereRegNet(torch.nn.Module):
         sphere_init: torch.Tensor,
         return_intermediate: bool = False,
     ) -> torch.Tensor:
-        """
-        Returns
-        -------
-        r : (B, 3, N_max) 3D final positions at resolution ico_out.
-        """
+        """Returns the vertex positions at ico_out, (B, 3, N)."""
         n_in = self.topologies[self.ico_in].n_vertices
         r = sphere_init[:, :, :n_in].clone()
 
@@ -118,6 +110,7 @@ class SphereRegNet(torch.nn.Module):
             unet = self.unets[str(order)]
             deform = self.deforms[str(order)]
 
+            # vertices of a coarser level are the first ones of the finer level
             sulc_subj_k = sulc_subj[:, :, :n_k]
 
             for it in range(self.n_iter[order]):
@@ -126,9 +119,7 @@ class SphereRegNet(torch.nn.Module):
 
                 features = unet(x)
                 dr = deform(features)
-                dr = dr.clamp(-10, 10)  
-
-
+                dr = dr.clamp(-10, 10)
 
                 if return_intermediate:
                     intermediate_stats.append({
@@ -143,7 +134,6 @@ class SphereRegNet(torch.nn.Module):
                 r = solve_ode_euler_rotate(self.step_size, r, dr)
                 r = F.normalize(r, dim=1) * self.sphere_radius
 
-            # Subdivision for next level, if any
             if order < self.ico_out:
                 r = self.topologies[order].subdivide_vertices(r.mT).mT
                 r = self.project_to_sphere(r)

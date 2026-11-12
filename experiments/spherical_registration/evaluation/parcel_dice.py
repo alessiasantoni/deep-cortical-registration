@@ -1,34 +1,22 @@
 """
-Parcellation comparison via Dice, with FreeSurfer as ground truth.
+Dice of the aparc parcellation, with FreeSurfer as reference.
 
-For each subject, THREE registered spheres + ONE fixed baseline
-(same ico=6 mesh, 245762 vertices):
-  - mine (from my model)
-  - JOSA's (derivatives/lh.sphere.reg.josa)
-  - FreeSurfer's (derivatives/lh.sphere.reg.freesurfer)
-  - initial (undeformed template sphere, FIXED, same for every subject --
-    "zero registration" baseline, used to diagnose whether outliers already
-    start shifted before any registration is applied)
+The fsaverage aparc (atlas.py) is moved by nearest neighbour onto the sphere of each
+subject registered with our network, with JOSA and with FreeSurfer, and onto the
+undeformed template (no registration: shows whether a subject is already hard
+before registering). Each one is then compared with the FreeSurfer labels.
 
-The SAME fsaverage atlas is transferred to each sphere (nearest-neighbor on the
-unit sphere), then:
-  - Dice(mine, FS)     -> how accurate I am
-  - Dice(JOSA, FS)   -> how accurate JOSA is
-  - Dice(initial, FS)  -> how accurate "no registration at all" already is
-FS is the yardstick: higher Dice = closer to the gold standard.
+Outputs, in <run_dir>/parcel_dice:
+  dice_{mine,josa,initial}_vs_fs.csv   one row per subject, Dice of every region +
+                                       simple mean, size-weighted mean, global Dice
+  dice_per_region_summary.csv
+  who_wins.txt                         global Dice, ours vs JOSA
+  outlier_subjects_{mine,diff}.csv     IQR outliers of our Dice / of ours - JOSA
+  boxplots
 
-Output:
-  - per-subject CSV (mine/josa), with all three summaries
-  - per-region summary CSV
-  - THREE separate boxplots: Initial vs FS, Mine vs FS, JOSA vs FS
-  - per-region comparison boxplot
-  - "who wins" stats based on GLOBAL Dice
-  - outlier subjects (IQR rule) = the "worst subjects" list, ready for VTK
-    visualization, now also reporting the initial Dice for diagnosis
-
-Usage (from the repository root, after inference.py):
   python -m experiments.spherical_registration.evaluation.parcel_dice --run_dir runs/ico6_train
-Reads <run_dir>/test_predictions (or --pred_dir), writes <run_dir>/parcel_dice/.
+
+Reads <run_dir>/test_predictions, or --pred_dir.
 """
 
 from pathlib import Path
@@ -41,18 +29,14 @@ import matplotlib.pyplot as plt
 
 import brainsynth.resources
 
+from experiments.spherical_registration.evaluation.atlas import add_fsaverage_argument, load_fsaverage_atlas
+from experiments.spherical_registration import finetune_train
 
-# ============================================================
-# CONFIG  --  CHECK/FILL THESE
-# ============================================================
+DATA_ROOT = Path(finetune_train.DATA_ROOT)
+
 
 HEMI = "lh"
 
-# fsaverage aparc resampled on the brainsynth template mesh: its labels are
-# indexed like the vertices of the template sphere.reg, so it must be paired with that sphere
-FSAVERAGE_ANNOT = Path(f"experiments/spherical_registration/fsaverage_aparc/{HEMI}.aparc.annot")
-
-DATA_ROOT = Path("/projects/brainnet-data/sphere-reg")
 JOSA_SPHERE_NAME   = f"{HEMI}.sphere.reg.josa"
 FS_SPHERE_NAME     = f"{HEMI}.sphere.reg.freesurfer"
 
@@ -61,6 +45,7 @@ parser.add_argument("--run_dir", default="runs/ico6_train",
                     help="run folder; results go in <run_dir>/parcel_dice")
 parser.add_argument("--pred_dir", default=None,
                     help="folder with the predicted spheres (default: <run_dir>/test_predictions)")
+add_fsaverage_argument(parser)
 args = parser.parse_args()
 
 PRED_SPHERES_DIR = Path(args.pred_dir) if args.pred_dir else Path(args.run_dir) / "test_predictions"
@@ -69,12 +54,8 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 N_VERTS_EXPECTED = 245762
 
-IQR_K = 1.5   # standard matplotlib boxplot rule
+IQR_K = 1.5   # same rule as the whiskers of matplotlib boxplots
 
-
-# ============================================================
-# Helpers
-# ============================================================
 
 def normalize_to_unit_sphere(verts: np.ndarray) -> np.ndarray:
     return verts / np.linalg.norm(verts, axis=1, keepdims=True)
@@ -149,45 +130,24 @@ def detect_outliers_iqr(values: np.ndarray, k: float = IQR_K):
     return (values < lower) | (values > upper)
 
 
-# ============================================================
-# Load the fsaverage atlas (once)
-# ============================================================
-
-print("Loading fsaverage atlas")
-print(f"  sphere: brainsynth template {HEMI}.sphere.reg")
-print(f"  annot:  {FSAVERAGE_ANNOT}")
-
-template_resources = brainsynth.resources.Template()
-fsavg_sphere = template_resources.load_surface(HEMI, "sphere.reg")["vertices"].numpy()
-fsavg_labels, ctab, region_names = nib.freesurfer.read_annot(str(FSAVERAGE_ANNOT))
-
-print(f"  -> sphere: {fsavg_sphere.shape[0]} vertices, "
-      f"annot: {len(fsavg_labels)} vertices, {len(region_names)} regions")
-
-assert fsavg_sphere.shape[0] == len(fsavg_labels), (
-    f"fsaverage MISMATCH: sphere has {fsavg_sphere.shape[0]} vertices but "
-    f"annot has {len(fsavg_labels)}. They are not the same fsaverage!"
-)
+print(f"atlas: {args.fsaverage_dir}")
+fsavg_sphere, fsavg_labels, region_names = load_fsaverage_atlas(args.fsaverage_dir, HEMI)
+print(f"  {fsavg_sphere.shape[0]} vertices, {len(region_names)} regions")
 
 
-# ============================================================
-# Labels on the INITIAL sphere (fixed, undeformed, "zero registration" baseline)
-# ============================================================
-
-print("\nComputing baseline labels on the UNDEFORMED initial sphere (same for all subjects)")
-template_verts = fsavg_sphere[:N_VERTS_EXPECTED]
+# no-registration baseline: the same labels for every subject
+template_verts = brainsynth.resources.Template().load_surface(HEMI, "sphere.reg")["vertices"].numpy()
+template_verts = template_verts[:N_VERTS_EXPECTED]
 
 labels_initial = transfer_labels(fsavg_sphere, fsavg_labels, template_verts)
-print(f"  -> baseline labels computed on {template_verts.shape[0]} vertices "
-      f"(fixed, no per-subject registration)")
 
 
-# ============================================================
-# Per-subject evaluation
-# ============================================================
+# per-region Dice of the baseline, filled by evaluate_subject()
+dice_initial_by_subject = {}
+
 
 def evaluate_subject(pred_path: Path):
-    """Returns (dataset, subject, dice_mine, dice_josa, g_initial) or None."""
+    """(dataset, subject, dice_mine, dice_josa, g_initial), or None if a file is missing."""
     dataset, subject = parse_subject_from_filename(pred_path.name)
 
     sub_dir = DATA_ROOT / dataset / subject
@@ -195,10 +155,10 @@ def evaluate_subject(pred_path: Path):
     fs_path     = sub_dir / "derivatives" / FS_SPHERE_NAME
 
     if not josa_path.exists():
-        print(f"  [{dataset}/{subject}] JOSA sphere missing, skip")
+        print(f"  {dataset}/{subject}: no JOSA sphere")
         return None
     if not fs_path.exists():
-        print(f"  [{dataset}/{subject}] FreeSurfer sphere missing, skip")
+        print(f"  {dataset}/{subject}: no FreeSurfer sphere")
         return None
 
     mine_sphere,   _ = nib.freesurfer.read_geometry(str(pred_path))
@@ -207,8 +167,7 @@ def evaluate_subject(pred_path: Path):
 
     for name, s in [("mine", mine_sphere), ("JOSA", josa_sphere), ("FS", fs_sphere)]:
         if s.shape[0] != N_VERTS_EXPECTED:
-            print(f"  [{dataset}/{subject}] {name} sphere has {s.shape[0]} "
-                  f"vertices (expected {N_VERTS_EXPECTED}), skip")
+            print(f"  {dataset}/{subject}: {name} sphere has {s.shape[0]} vertices")
             return None
 
     labels_mine   = transfer_labels(fsavg_sphere, fsavg_labels, mine_sphere)
@@ -220,30 +179,26 @@ def evaluate_subject(pred_path: Path):
 
     g_mine    = global_dice(labels_mine,    labels_fs)
     g_josa  = global_dice(labels_josa,  labels_fs)
-    g_initial = global_dice(labels_initial, labels_fs)   # baseline, FS of THIS subject
+    g_initial = global_dice(labels_initial, labels_fs)
 
     dice_mine["__global__"]   = (g_mine, 0)
     dice_josa["__global__"] = (g_josa, 0)
 
-    print(
-        f"[{dataset}/{subject}]  "
-        f"Initial: {g_initial:.4f} | Mine: {g_mine:.4f} | JOSA: {g_josa:.4f} | "
-        f"Diff mine-josa: {g_mine - g_josa:+.4f}"
-    )
+    dice_initial = dice_per_region(labels_initial, labels_fs, region_names)
+    dice_initial["__global__"] = (g_initial, 0)
+    dice_initial_by_subject[(dataset, subject)] = dice_initial
+
+    print(f"{dataset}/{subject}  initial {g_initial:.4f}  mine {g_mine:.4f}  josa {g_josa:.4f}")
 
     return dataset, subject, dice_mine, dice_josa, g_initial
 
 
-# ============================================================
-# Loop over subjects
-# ============================================================
-
 pred_files = sorted(PRED_SPHERES_DIR.glob(f"*_{HEMI}.sphere.reg"))
-print(f"\nFound {len(pred_files)} predicted spheres in {PRED_SPHERES_DIR}")
+print(f"\n{len(pred_files)} spheres in {PRED_SPHERES_DIR}")
 if not pred_files:
     raise RuntimeError("No predicted spheres found. Check PRED_SPHERES_DIR and naming.")
 
-results = []   # list of (dataset, subject, dice_mine, dice_josa, g_initial)
+results = []
 for i, pf in enumerate(pred_files, 1):
     if i % 50 == 0 or i == 1:
         print(f"  [{i}/{len(pred_files)}] {pf.name}")
@@ -251,7 +206,7 @@ for i, pf in enumerate(pred_files, 1):
     if r is not None:
         results.append(r)
 
-print(f"\nEvaluated: {len(results)} / {len(pred_files)}")
+print(f"\n{len(results)} / {len(pred_files)} subjects evaluated")
 if not results:
     raise RuntimeError("No subjects evaluated. Check JOSA/FS paths.")
 
@@ -261,17 +216,14 @@ all_regions = sorted({
 })
 
 
-# ============================================================
-# Output 1: per-subject CSV (mine / josa, with all three summaries)
-# ============================================================
-
-def write_per_subject_csv(path, idx):
+def write_per_subject_csv(path, method):
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["dataset", "subject"] + all_regions
                    + ["simple_mean", "weighted_mean", "global_dice"])
         for dataset, subject, dice_mine, dice_josa, g_initial in results:
-            d = (dice_mine, dice_josa)[idx]
+            d = {"mine": dice_mine, "josa": dice_josa,
+                 "initial": dice_initial_by_subject[(dataset, subject)]}[method]
             region_vals = [d[r][0] if r in d else np.nan for r in all_regions]
             d_regions = {k: v for k, v in d.items() if k != "__global__"}
             w.writerow(
@@ -281,14 +233,9 @@ def write_per_subject_csv(path, idx):
                    d["__global__"][0]]
             )
 
-write_per_subject_csv(OUTPUT_DIR / "dice_mine_vs_fs.csv", 0)
-write_per_subject_csv(OUTPUT_DIR / "dice_josa_vs_fs.csv", 1)
-print(f"Per-subject CSV -> {OUTPUT_DIR}/dice_mine_vs_fs.csv, dice_josa_vs_fs.csv")
+for method in ("mine", "josa", "initial"):
+    write_per_subject_csv(OUTPUT_DIR / f"dice_{method}_vs_fs.csv", method)
 
-
-# ============================================================
-# Output 2: per-region summary
-# ============================================================
 
 with open(OUTPUT_DIR / "dice_per_region_summary.csv", "w", newline="") as f:
     w = csv.writer(f)
@@ -299,12 +246,7 @@ with open(OUTPUT_DIR / "dice_per_region_summary.csv", "w", newline="") as f:
         josa = np.array([ds[r][0] for _, _, _, ds, _ in results if r in ds], float)
         mm, jm = np.nanmean(mine), np.nanmean(josa)
         w.writerow([r, mm, np.nanstd(mine), jm, np.nanstd(josa), mm - jm])
-print(f"Per-region summary -> {OUTPUT_DIR}/dice_per_region_summary.csv")
 
-
-# ============================================================
-# Output 3: "who wins" -- based on GLOBAL Dice (metric B)
-# ============================================================
 
 mine_global    = np.array([dm["__global__"][0] for _, _, dm, _, _ in results], float)
 josa_global    = np.array([ds["__global__"][0] for _, _, _, ds, _ in results], float)
@@ -324,19 +266,14 @@ with open(summary_txt, "w") as f:
     f.write(f"Mean difference (Mine - JOSA): {diff.mean():+.4f}\n\n")
     f.write(f"Subjects where I win    : {wins_mine}/{len(results)}\n")
     f.write(f"Subjects where JOSA wins  : {wins_josa}/{len(results)}\n")
-print(f"Who wins -> {summary_txt}")
 
-print("\n=== RESULT (global Dice) ===")
+
+print("\nglobal Dice")
 print(f"  Initial (no reg.): {initial_global.mean():.4f} +/- {initial_global.std():.4f}")
 print(f"  Mine             : {mine_global.mean():.4f} +/- {mine_global.std():.4f}")
 print(f"  JOSA             : {josa_global.mean():.4f} +/- {josa_global.std():.4f}")
-print(f"  Diff             : {diff.mean():+.4f}  (I win {wins_mine}/{len(results)} subjects)")
+print(f"  mine - JOSA      : {diff.mean():+.4f}, better on {wins_mine}/{len(results)} subjects")
 
-
-# ============================================================
-# Output 3b: OUTLIER subjects (IQR rule) -- the "worst subjects" list,
-#            also includes the INITIAL Dice for diagnosis
-# ============================================================
 
 outlier_mask_mine = detect_outliers_iqr(mine_global)
 outlier_mask_diff = detect_outliers_iqr(diff)
@@ -365,9 +302,9 @@ rows_outliers_mine = write_outliers_csv(outliers_mine_path, outlier_mask_mine, s
 rows_outliers_diff = write_outliers_csv(outliers_diff_path, outlier_mask_diff, sort_key_idx=5)
 
 print(f"\nOutliers on my Dice (IQR, k={IQR_K}): {outlier_mask_mine.sum()}/{len(results)} subjects")
-print(f"  -> {outliers_mine_path}")
+
 print(f"Outliers on the mine-josa difference (IQR, k={IQR_K}): {outlier_mask_diff.sum()}/{len(results)} subjects")
-print(f"  -> {outliers_diff_path}")
+
 
 worst_txt = OUTPUT_DIR / "worst_subjects.txt"
 with open(worst_txt, "w") as f:
@@ -381,18 +318,13 @@ with open(worst_txt, "w") as f:
     for ds_name, subj, g_init, m, j, d in rows_outliers_diff:
         f.write(f"{ds_name:<14} {subj:<14} {g_init:>8.4f} {m:>8.4f} {j:>8.4f} {d:>+8.4f}\n")
 
-print(f"Worst/outlier list -> {worst_txt}")
 
-print(f"\n=== First outliers (my Dice, lowest) ===")
+print("\nlowest Dice:")
 for ds_name, subj, g_init, m, j, d in rows_outliers_mine[:5]:
     print(f"  {ds_name}/{subj}: initial={g_init:.4f}  mine={m:.4f}  josa={j:.4f}  diff={d:+.4f}")
 
 
-# ============================================================
-# Output 4: plots
-# ============================================================
-
-# (a0) Separate boxplot: INITIAL (no registration) vs FS
+# one boxplot per method, outliers in red
 fig, ax = plt.subplots(figsize=(4.5, 6))
 ax.boxplot([initial_global], labels=["Initial (no reg.)"], showfliers=True,
            flierprops=dict(marker="o", markerfacecolor="red",
@@ -407,7 +339,6 @@ plt.tight_layout()
 fig.savefig(OUTPUT_DIR / "dice_initial_vs_fs_boxplot.png", dpi=150)
 plt.close(fig)
 
-# (a1) Separate boxplot: MINE vs FS
 fig, ax = plt.subplots(figsize=(4.5, 6))
 ax.boxplot([mine_global], labels=["Mine"], showfliers=True,
            flierprops=dict(marker="o", markerfacecolor="red",
@@ -422,7 +353,6 @@ plt.tight_layout()
 fig.savefig(OUTPUT_DIR / "dice_mine_vs_fs_boxplot.png", dpi=150)
 plt.close(fig)
 
-# (a2) Separate boxplot: JOSA vs FS
 fig, ax = plt.subplots(figsize=(4.5, 6))
 ax.boxplot([josa_global], labels=["JOSA"], showfliers=True,
            flierprops=dict(marker="o", markerfacecolor="red",
@@ -437,7 +367,7 @@ plt.tight_layout()
 fig.savefig(OUTPUT_DIR / "dice_josa_vs_fs_boxplot.png", dpi=150)
 plt.close(fig)
 
-# (b) Per-region boxplot, side by side
+# per region, ours and JOSA side by side
 fig, ax = plt.subplots(figsize=(max(14, len(all_regions) * 0.8), 6))
 positions_mine = np.arange(len(all_regions)) * 2.0
 positions_josa = positions_mine + 0.8
@@ -465,4 +395,4 @@ plt.tight_layout()
 fig.savefig(OUTPUT_DIR / "dice_per_region_comparison.png", dpi=150)
 plt.close(fig)
 
-print(f"\nPlots -> {OUTPUT_DIR}")
+print(f"\nresults in {OUTPUT_DIR}")

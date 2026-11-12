@@ -1,40 +1,16 @@
 """
-Fine-tuning of ONE level per run (ico4, ico5 or ico6), uniform sampling.
-The level is chosen with --level, and starts from the best checkpoint of the
-previous level:
-  --level 4  loads new_network/ico3_train/best_val_total.pt
-  --level 5  loads new_network/ico4_train/best_val_total.pt
-  --level 6  loads new_network/ico5_train/best_val_total.pt
-All levels below the one being trained are frozen. The depth of the coarse
-(ico3) stage is randomized at every training step, using the range stored in
-the checkpoint; validation and sphere saving use the fixed reference depth.
+Second stage: adds one finer level per run (--level 4, 5 or 6) on top of the
+previous one. The weights of the lower levels come from
+<out_dir>/ico{level-1}_train/best_val_total.pt and stay frozen, only the new
+level is trained.
 
-Same logging as ico3_train.py: every train/val step appends one row to
-`loss_per_step.csv` (raw and weighted value of each loss component, plus an
-`ico_level` column, same schema as ico3), so the ico3/4/5/6 files can be
-concatenated to plot each loss component continuously across levels.
+As in train.py, the number of ico3 iterations is random while training (range read
+from the checkpoint) and fixed for validation. Same step CSV as train.py, plus
+loss_history.csv with one row per epoch and the % of folded triangles.
 
-Outputs, in new_network/ico{L}_train/:
-  best_val_total.pt, loss_per_step.csv, loss_history.csv, loss_total.png,
-  loss_components.png, spheres/epoch_XXX/
+  python -m experiments.spherical_registration.finetune_train --level 4 [--out_dir runs]
 
-Usage (from the project root):
-  python -m experiments.spherical_registration.finetune_train --level 4
-
-cd /home/s252125/my_project
-nohup /home/s252125/miniforge3/envs/brainnet/bin/python3 -m experiments.spherical_registration.finetune_train --level 4 \
-  > experiments/sphere_reg2/new_network/log_finetune_ico4.txt 2>&1 &
-disown
-
-# default: salva in runs/ico3_train, runs/ico4_train, ...
-python -m experiments.spherical_registration.train
-python -m experiments.spherical_registration.finetune_train --level 4
-
-# sul cluster, su /projects:
-python -m experiments.spherical_registration.train --out_dir /projects/thesis-alessia
-python -m experiments.spherical_registration.finetune_train --level 4 --out_dir /projects/thesis-alessia
-
-
+DATA_ROOT, SPLIT_DIR and BAD_SURFACES below are also used by the evaluation scripts.
 """
 
 import argparse
@@ -57,10 +33,6 @@ from experiments.spherical_registration.network import SphereRegNet
 from experiments.spherical_registration.loss import SulcalAlignmentLoss, compute_signed_face_areas
 
 
-# ============================================================
-# CONFIG
-# ============================================================
-
 SPLIT_DIR = "/projects/brainnet-data/subject_splits"
 BAD_SURFACES = "/projects/brainnet-data/subject_splits/bad_surfaces.json"
 
@@ -70,14 +42,14 @@ DATASETS = ["ABIDE", "ADHD200", "ADNI3", "AIBL", "Buckner40",
             "Chinese-HCP", "HCP", "OASIS3", "ISBI2015"]
 HEMI       = "lh"
 
-SAVE_ROOT = Path("runs")   # default; can be changed with --out_dir
+SAVE_ROOT = Path("runs")   # replaced by --out_dir in main()
 
 ICO_IN     = 3
 BASE_CH    = 32
 STEP_SIZE  = 0.01
 SPHERE_RADIUS = 100.0
 
-# Refinement iterations of each fine level (the ico3 depth comes from the checkpoint)
+# iterations at each finer level (the ico3 ones are read from the checkpoint)
 FINE_N_ITER = {4: 7, 5: 5, 6: 3}
 
 N_EPOCHS   = 25
@@ -86,7 +58,7 @@ LR         = 1e-4
 GRAD_CLIP  = 0.5
 WEIGHT_DECAY = 1e-4
 
-# Loss weights per stage
+# loss weights of each level; metric grows with the level to limit distortion
 LEVEL_WEIGHTS = {
     4: {"sulc": 1.0, "metric": 0.6, "area": 0.005, "count": 1e-4},
     5: {"sulc": 1.0, "metric": 1.0, "area": 0.005, "count": 1e-6},
@@ -105,10 +77,6 @@ EARLY_STOPPING_MIN_DELTA = 1e-4
 
 LOSS_COMPONENTS = ["sulc", "metric", "area", "count"]
 
-
-# ============================================================
-# Helpers
-# ============================================================
 
 def stage_dir(level: int) -> Path:
     return SAVE_ROOT / f"ico{level}_train"
@@ -151,31 +119,27 @@ def folded_percent(pred_verts: torch.Tensor, faces: torch.Tensor) -> float:
     return 100.0 * (signed_area < 0).float().mean().item()
 
 
-# ============================================================
-# Checkpoint loading + freezing
-# ============================================================
-
 def get_coarse_depth_config(ckpt):
-    """(min_iter, max_iter, val_reference_iter) of the coarse ico3 stage."""
+    """Range of ico3 iterations used in training and the value used for validation.
+    Old checkpoints may not have them, hence the fallbacks."""
     min_iter, max_iter = ckpt.get("min_iter"), ckpt.get("max_iter")
     val_ref = ckpt.get("val_reference_iter")
     if min_iter is None or max_iter is None:
         fallback = val_ref if val_ref is not None else 15
-        print(f"  WARNING: min_iter/max_iter missing in checkpoint -- using fixed depth={fallback}")
+        print(f"  no min_iter/max_iter in checkpoint, using {fallback}")
         min_iter = max_iter = fallback
     if val_ref is None:
         val_ref = (min_iter + max_iter) // 2
-        print(f"  WARNING: val_reference_iter missing in checkpoint -- using {val_ref}")
-    print(f"  Coarse depth range (from checkpoint): [{min_iter}, {max_iter}], "
-          f"validation depth: {val_ref}")
+        print(f"  no val_reference_iter in checkpoint, using {val_ref}")
+    print(f"  ico3 iterations: [{min_iter}, {max_iter}], {val_ref} in validation")
     return min_iter, max_iter, val_ref
 
 
 def load_lower_weights(model: SphereRegNet, ckpt):
     state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
+    # strict=False: the weights of the new level are not in the checkpoint
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    print(f"  Missing keys (new level, trained from scratch): {len(missing)}  "
-          f"Unexpected keys: {len(unexpected)}")
+    print(f"  {len(missing)} new parameters, {len(unexpected)} unexpected")
 
 
 def freeze_lower_subnets(model, freeze_orders):
@@ -186,12 +150,12 @@ def freeze_lower_subnets(model, freeze_orders):
             frozen_count += param.numel()
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
-    print(f"  Freezing sub-networks {list(freeze_orders)}: frozen={frozen_count:,}  "
-          f"trainable={trainable:,}  total={total:,}")
+    print(f"  frozen levels {list(freeze_orders)}: {frozen_count:,} frozen, "
+          f"{trainable:,} trainable, {total:,} total")
 
 
 def build_stage_model(level, prev_ckpt):
-    """Model with levels ico_in..level, lower levels loaded and frozen."""
+    """Network from ico3 to `level`, lower levels loaded and frozen."""
     coarse_min, coarse_max, val_depth = get_coarse_depth_config(prev_ckpt)
     n_iter = [val_depth] + [FINE_N_ITER[l] for l in range(ICO_IN + 1, level + 1)]
     model = SphereRegNet(
@@ -203,10 +167,7 @@ def build_stage_model(level, prev_ckpt):
     return model, coarse_min, coarse_max, val_depth
 
 
-# ============================================================
-# Per-step loss CSV (same schema as ico3_train.py)
-# ============================================================
-
+# same columns as in train.py
 STEP_LOG_FIELDS = (
     ["ico_level", "epoch", "global_step", "split", "depth", "dataset", "subject"]
     + [f"{c}_raw" for c in LOSS_COMPONENTS]
@@ -236,10 +197,6 @@ def log_step(writer, log_file, level, weights, epoch, global_step, split, depth,
     writer.writerow(row)
     log_file.flush()
 
-
-# ============================================================
-# Sphere saving
-# ============================================================
 
 def save_predicted_spheres(model, loader, template_grid, template_sphere_init,
                             epoch, save_dir, val_depth, n_save=N_SAVE):
@@ -275,10 +232,6 @@ def save_predicted_spheres(model, loader, template_grid, template_sphere_init,
     model.n_iter[model.ico_in] = original_iter
     print(f"  Saved {saved} sphere(s) -> {out_dir}")
 
-
-# ============================================================
-# Run epoch -- variable coarse depth in train, fixed in val, NO rotation
-# ============================================================
 
 def run_epoch(model, loader, criterion, template_grid, template_sphere_init,
               optimizer, epoch, level, weights, step_state, step_writer, step_log_file,
@@ -362,20 +315,14 @@ def run_epoch(model, loader, criterion, template_grid, template_sphere_init,
     return result
 
 
-# ============================================================
-# One fine-tuning stage
-# ============================================================
-
 def train_level(level, train_loader, val_loader, template_grid, template_sphere_init):
     weights = LEVEL_WEIGHTS[level]
     save_dir = stage_dir(level)
     save_dir.mkdir(parents=True, exist_ok=True)
     prev_ckpt_path = previous_checkpoint(level)
 
-    print(f"\n{'=' * 60}\nFine-tuning ico{level}\n{'=' * 60}")
-    print(f"Save dir: {save_dir}")
-    print(f"Weights: {weights}")
-    print(f"Loading checkpoint: {prev_ckpt_path}")
+    print(f"\nico{level}: weights {weights}")
+    print(f"starting from {prev_ckpt_path}, saving in {save_dir}")
 
     prev_ckpt = torch.load(prev_ckpt_path, map_location=DEVICE)
     model, coarse_min, coarse_max, val_depth = build_stage_model(level, prev_ckpt)
@@ -392,11 +339,10 @@ def train_level(level, train_loader, val_loader, template_grid, template_sphere_
         optimizer, mode="min", factor=0.5, patience=3, threshold=1e-3, min_lr=1e-7,
     )
 
-    # --- Per-step CSV: raw + weighted value of every loss component, every step ---
     step_log_file, step_writer = open_step_log(save_dir / "loss_per_step.csv")
     step_state = {"train": 0, "val": 0}
 
-    # --- Per-epoch CSV: weighted columns keep the old loss_history.csv names, raw columns added ---
+    # train_<c>/val_<c> are the weighted values, *_raw the unweighted ones
     history_fields = (
         ["epoch", "train_total"] + [f"train_{c}" for c in LOSS_COMPONENTS]
         + ["val_total"] + [f"val_{c}" for c in LOSS_COMPONENTS]
@@ -408,7 +354,6 @@ def train_level(level, train_loader, val_loader, template_grid, template_sphere_
     with open(history_path, "w", newline="") as f:
         csv.writer(f).writerow(history_fields)
 
-    # --- Per-epoch history, for the summary plots (raw AND weighted) ---
     train_total_hist, val_total_hist, val_epochs = [], [], []
     train_raw_hist = {c: [] for c in LOSS_COMPONENTS}
     train_weighted_hist = {c: [] for c in LOSS_COMPONENTS}
@@ -445,10 +390,8 @@ def train_level(level, train_loader, val_loader, template_grid, template_sphere_
             val_raw_hist[c].append(val_metrics[c])
             val_weighted_hist[c].append(weights[c] * val_metrics[c])
 
-        print(f"Epoch {epoch:3d}  train_total={train_metrics['total']:.4f} "
-              f"(coarse depth mean={train_metrics.get('_depth_mean', float('nan')):.1f})  "
-              f"val_total(coarse depth={val_depth})={val_metrics['total']:.4f}  "
-              f"folded% train/val={train_folded_hist[-1]:.4f}/{val_folded_hist[-1]:.4f}")
+        print(f"Epoch {epoch:3d}  train {train_metrics['total']:.4f}  val {val_metrics['total']:.4f}  "
+              f"folded {train_folded_hist[-1]:.3f}% / {val_folded_hist[-1]:.3f}%")
 
         with open(history_path, "a", newline="") as f:
             csv.writer(f).writerow(
@@ -462,7 +405,7 @@ def train_level(level, train_loader, val_loader, template_grid, template_sphere_
             )
 
         if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
-            print(f"EARLY STOPPING at epoch {epoch}")
+            print(f"Early stopping at epoch {epoch}")
             break
 
         if val_metrics["total"] < best_val_total - EARLY_STOPPING_MIN_DELTA:
@@ -474,7 +417,7 @@ def train_level(level, train_loader, val_loader, template_grid, template_sphere_
                 "min_iter": coarse_min, "max_iter": coarse_max,
                 "val_reference_iter": val_depth,
             }, save_dir / "best_val_total.pt")
-            print(f"  >>> New best: {best_val_total:.4f}")
+            print(f"  best so far ({best_val_total:.4f}), checkpoint saved")
         else:
             epochs_without_improvement += 1
 
@@ -485,10 +428,6 @@ def train_level(level, train_loader, val_loader, template_grid, template_sphere_
 
     step_log_file.close()
     print(f"\nPer-step loss log -> {save_dir / 'loss_per_step.csv'}")
-
-    # ============================================================
-    # Plots (English)
-    # ============================================================
 
     epochs_range = range(1, len(train_total_hist) + 1)
 
@@ -548,10 +487,6 @@ def train_level(level, train_loader, val_loader, template_grid, template_sphere_
 
     print(f"\nico{level} best val_total: {best_val_total:.4f}")
 
-
-# ============================================================
-# Main
-# ============================================================
 
 def main():
     global SAVE_ROOT

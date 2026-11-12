@@ -1,28 +1,19 @@
 """
-Boundary distance between parcellations: 90th-percentile Hausdorff distance (HD90),
-maximum Hausdorff distance (HD100) and mean boundary distance (MBD), in mm.
+How far the region boundaries are from FreeSurfer's, in mm: HD90 (90th percentile
+of the boundary distances), HD100 (max) and MBD (mean).
 
-For each subject, the fsaverage aparc is transferred (nearest neighbour on the unit
-sphere, as in parcel_dice.py) to the subject's sphere registered with each method
-(no registration = undeformed template, JOSA, proposed network) and with FreeSurfer
-(reference). For every region r:
-  - boundary vertices of r: vertices labelled r with at least one mesh neighbour
-    carrying a different label;
-  - distances are Euclidean, measured on the subject's white surface (lh.white,
-    same ico6 vertices as the spheres);
-  - for each boundary vertex of the method, the distance to the closest boundary
-    vertex of FreeSurfer, and vice versa; the two sets are pooled;
-  - HD90 = 90th percentile, HD100 = maximum, MBD = mean of the pooled distances.
-A region missing from one of the two parcellations gives NaN.
-Per-subject summaries: mean of the regional HD90, and HD90/MBD of the distances
-pooled over all regions ("global").
+The aparc is moved onto the subject with each registration (no registration, JOSA,
+ours) and with FreeSurfer, as in parcel_dice.py. For each region, its boundary
+vertices are the ones with a neighbour of another region. Distances are measured on
+the subject's lh.white, from each boundary vertex of one parcellation to the closest
+one of the other, in both directions. If a region is missing in one of the two the
+value is NaN. "global" means all regions pooled together.
 
-Subjects: those in <run_dir>/parcel_dice/dice_mine_vs_fs.csv written by parcel_dice.py.
-Output (in <run_dir>/parcel_dice):
-  hausdorff_<method>_vs_fs.csv      one row per subject, hd90_<region> + summaries
-  hausdorff_per_region_summary.csv  median HD90 per region and method
+Subjects are those of <run_dir>/parcel_dice/dice_mine_vs_fs.csv, so run parcel_dice.py
+first (with the same --pred_dir). Outputs, in <run_dir>/parcel_dice:
+  hausdorff_<method>_vs_fs.csv      one row per subject
+  hausdorff_per_region_summary.csv  median HD90 per region
 
-Usage (from the repository root, after parcel_dice.py, with the same --pred_dir):
   python -m experiments.spherical_registration.evaluation.hausdorff_boundaries --run_dir runs/ico6_train
 """
 
@@ -37,37 +28,37 @@ from scipy.spatial import cKDTree
 
 import brainsynth.resources
 
+from experiments.spherical_registration.evaluation.atlas import add_fsaverage_argument, load_fsaverage_atlas
+from experiments.spherical_registration import finetune_train
+
+DATA_ROOT = Path(finetune_train.DATA_ROOT)
+
 HEMI = "lh"
-# fsaverage aparc resampled on the brainsynth template mesh: its labels are
-# indexed like the vertices of the template sphere.reg, so it must be paired with that sphere
-FSAVERAGE_ANNOT = Path(f"experiments/spherical_registration/fsaverage_aparc/{HEMI}.aparc.annot")
-DATA_ROOT = Path("/projects/brainnet-data/sphere-reg")
-PRED_DIR = None      # set in main() from --run_dir / --pred_dir
+PRED_DIR = None      # set in main()
 N_VERTS = 245762
 PERCENTILE = 90
 N_WORKERS = 16
-METHODS = ["initial", "josa", "mine"]   # compared against FreeSurfer
+METHODS = ["initial", "josa", "mine"]
 
 
 def unit(v):
     return v / np.linalg.norm(v, axis=1, keepdims=True)
 
 
-# --- globals shared by the worker processes (set once, inherited via fork) ---
+# filled once in init_globals(), the worker processes get them through fork
 FSAVG_TREE = None
 FSAVG_LABELS = None
 REGION_IDS = None
 LABELS_INITIAL = None
 
 
-def init_globals():
+def init_globals(fsaverage_dir):
     global FSAVG_TREE, FSAVG_LABELS, REGION_IDS, LABELS_INITIAL
-    fsavg = brainsynth.resources.Template().load_surface(HEMI, "sphere.reg")["vertices"].numpy()
+    fsavg, FSAVG_LABELS, names = load_fsaverage_atlas(fsaverage_dir, HEMI)
     FSAVG_TREE = cKDTree(unit(fsavg))
-    FSAVG_LABELS, _, names = nib.freesurfer.read_annot(str(FSAVERAGE_ANNOT))
-    assert fsavg.shape[0] == len(FSAVG_LABELS), "atlas and template sphere do not match"
     REGION_IDS = {names[i].decode(): i for i in np.unique(FSAVG_LABELS) if i > 0}
-    LABELS_INITIAL = transfer(fsavg[:N_VERTS])
+    template = brainsynth.resources.Template().load_surface(HEMI, "sphere.reg")["vertices"].numpy()
+    LABELS_INITIAL = transfer(template[:N_VERTS])
 
 
 def transfer(sphere):
@@ -141,6 +132,7 @@ def main():
     parser.add_argument("--pred_dir", default=None,
                         help="folder with the predicted spheres (default: <run_dir>/test_predictions)")
     parser.add_argument("--workers", type=int, default=N_WORKERS, help="parallel processes")
+    add_fsaverage_argument(parser)
     args = parser.parse_args()
 
     PRED_DIR = Path(args.pred_dir) if args.pred_dir else Path(args.run_dir) / "test_predictions"
@@ -151,7 +143,7 @@ def main():
         subjects = [(r[0], r[1]) for r in list(csv.reader(f))[1:]]
     print(f"{len(subjects)} subjects from {RESULTS_DIR / 'dice_mine_vs_fs.csv'}")
 
-    init_globals()
+    init_globals(args.fsaverage_dir)
     regions = sorted(REGION_IDS)
     with Pool(N_WORKERS) as pool:
         results = [r for r in pool.imap(process, subjects, chunksize=4) if r is not None]

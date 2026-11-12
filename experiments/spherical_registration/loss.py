@@ -1,11 +1,7 @@
 """
-Loss functions for training the spherical registration network.
-
-Combines a sulcal-depth (sulc) alignment term with mesh-quality terms that
-penalize folded (flipped) triangles, computed from the signed area of each
-face on the predicted sphere: a metric-preservation term against the WM
-surface, a folded-area penalty, and a differentiable folded-triangle count.
-SulcalAlignmentLoss combines these into a single weighted total loss.
+Losses for the spherical registration network: sulc alignment with the template,
+plus terms that keep the predicted mesh regular (edge lengths close to the WM
+surface, no flipped triangles).
 """
 
 import torch
@@ -15,52 +11,27 @@ from experiments.spherical_registration.dataset import sample_grid_at_vertices
 
 
 def compute_signed_face_areas(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-    """Signed area of each triangle, sphere-oriented.
-
-    Args:
-        verts: (B, N, 3) — vertices of the predicted sphere
-        faces: (F, 3)    — triangle indices
-
-    Returns:
-        (B, F) — signed area. Positive if the triangle is oriented
-                 like the sphere (normal points outward), negative
-                 if the triangle is flipped.
-    """
-    v0 = verts[:, faces[:, 0]]                # (B, F, 3)
+    """verts (B, N, 3), faces (F, 3) -> (B, F) area of each triangle, negative if flipped."""
+    v0 = verts[:, faces[:, 0]]
     v1 = verts[:, faces[:, 1]]
     v2 = verts[:, faces[:, 2]]
 
-    # Geometric normal (magnitude = 2 * unsigned area)
-    normal = torch.cross(v1 - v0, v2 - v0, dim=-1)   # (B, F, 3)
-
-    # Outward radial direction (normalized barycenter)
-    bary = (v0 + v1 + v2) / 3.0                       # (B, F, 3)
+    normal = torch.cross(v1 - v0, v2 - v0, dim=-1)   # its norm is twice the area
+    # on a sphere the outward direction of a face is just its (normalized) barycenter
+    bary = (v0 + v1 + v2) / 3.0
     bary_unit = bary / (bary.norm(dim=-1, keepdim=True) + 1e-8)
 
-    # Projection: signed area = 0.5 * (normal . bary_unit)
-    signed_area = 0.5 * (normal * bary_unit).sum(dim=-1)   # (B, F)
+    signed_area = 0.5 * (normal * bary_unit).sum(dim=-1)
     return signed_area
 
 
 def folded_area_loss(verts: torch.Tensor, faces: torch.Tensor,
                      reduction: str = "sum") -> torch.Tensor:
-    """Loss equal to the sum/mean of the areas of the flipped triangles.
-
-    Args:
-        verts: (B, N, 3)
-        faces: (F, 3)
-        reduction: 'sum' (total flipped area)
-
-    Returns:
-        scalar — loss; zero if there are no flips.
-    """
-    signed_area = compute_signed_face_areas(verts, faces)   # (B, F)
-
-    # ReLU(-signed_area) -> 0 if positive, |area| if negative
-    folded_magnitude = F.relu(-signed_area)                  # (B, F)
+    """Total (or mean) area of the flipped triangles, 0 when nothing is flipped."""
+    signed_area = compute_signed_face_areas(verts, faces)
+    folded_magnitude = F.relu(-signed_area)
 
     if reduction == "sum":
-        # Sum per batch sample, then mean over the batch
         return folded_magnitude.sum(dim=1).mean()
     elif reduction == "mean":
         return folded_magnitude.mean()
@@ -86,27 +57,15 @@ def faces_to_edges(faces: torch.Tensor) -> torch.Tensor:
 
 def folded_count_smooth(verts: torch.Tensor, faces: torch.Tensor,
                         temperature: float = 0.5) -> torch.Tensor:
-    """Approximately counts the number of flipped triangles (differentiable).
-
-    Args:
-        verts: (B, N, 3)
-        faces: (F, 3)
-        temperature: sigmoid smoothing. Smaller = closer to a
-                     binary count, but "sharper" gradients.
-                     Default 0.5 is a good compromise.
-
-    Returns:
-        scalar — sum per batch sample, averaged over the batch.
-                 Approximates the number of flipped triangles.
-    """
-    signed_area = compute_signed_face_areas(verts, faces)   # (B, F)
-    # Sigmoid of the negative area: 0 if signed_area >> 0, ~1 if signed_area << 0
+    """Soft count of flipped triangles (a sigmoid instead of a step, so it has gradients).
+    Lower temperature = closer to the real count but sharper gradients."""
+    signed_area = compute_signed_face_areas(verts, faces)
     folded_indicator = torch.sigmoid(-signed_area / temperature)
     return folded_indicator.sum(dim=1).mean()
 
 
 class SulcalAlignmentLoss(torch.nn.Module):
-    """Total loss: sulc + metric vs WM + area (folded) + count (folded smooth)."""
+    """sulc + metric (edge lengths vs WM) + area (flipped area) + count (soft flipped count)."""
 
     def __init__(
         self,
@@ -114,7 +73,7 @@ class SulcalAlignmentLoss(torch.nn.Module):
         w_metric: float = 0.1,
         w_area: float = 0.01,
         w_count: float = 0.0,
-        count_temperature: float = 0.5,  # Sigmoid temperature for the count term
+        count_temperature: float = 0.5,
         folded_reduction: str = "sum",
     ):
         super().__init__()
@@ -129,6 +88,7 @@ class SulcalAlignmentLoss(torch.nn.Module):
         self._edges = None
 
     def _setup_topology(self, faces: torch.Tensor):
+        # edges are computed once and reused, the mesh never changes
         if self._faces is None or self._faces.device != faces.device:
             self._faces = faces.long()
             self._edges = faces_to_edges(self._faces)
@@ -142,7 +102,6 @@ class SulcalAlignmentLoss(torch.nn.Module):
         ref_verts_metric: torch.Tensor = None, # (B, 3, N) WM surface
         faces: torch.Tensor = None,
     ):
-        # === Sulc loss ===
         sulc_temp_at_pred = sample_grid_at_vertices(template_grid, pred_verts)
         loss_sulc = F.mse_loss(sulc_subj, sulc_temp_at_pred)
 
@@ -159,9 +118,8 @@ class SulcalAlignmentLoss(torch.nn.Module):
             assert faces is not None, "faces or topology required"
             self._setup_topology(faces.to(pred_verts.device))
 
-            pred_v = pred_verts.transpose(1, 2)  # (B, N, 3)
+            pred_v = pred_verts.transpose(1, 2)
 
-            # === Metric loss ===
             if self.w_metric > 0:
                 assert ref_verts_metric is not None, "ref_verts_metric required for metric loss"
 
@@ -170,12 +128,13 @@ class SulcalAlignmentLoss(torch.nn.Module):
                 edge_pred = compute_edge_lengths(pred_v, self._edges)
                 edge_ref = compute_edge_lengths(ref_v_metric, self._edges)
 
+                # sphere and WM surface have different sizes: compare the edge lengths
+                # after rescaling the WM ones to the same total length
                 scale = edge_pred.sum() / (edge_ref.sum() + 1e-8)
 
                 loss_metric = F.mse_loss(edge_pred, edge_ref * scale)
                 total = total + self.w_metric * loss_metric
 
-            # === Area loss ===
             if self.w_area > 0:
                 loss_area = folded_area_loss(
                    pred_v, self._faces,
@@ -183,7 +142,6 @@ class SulcalAlignmentLoss(torch.nn.Module):
                 )
                 total = total + self.w_area * loss_area
 
-            # === Count loss ===
             if self.w_count > 0:
                 loss_count = folded_count_smooth(
                     pred_v, self._faces, temperature=self.count_temperature,

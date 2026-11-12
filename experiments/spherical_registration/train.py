@@ -1,12 +1,14 @@
 """
-Training ico=3 from scratch, uniform sampling, with the variable depth
-already validated previously.
+First stage: trains the ico3 network from scratch.
 
-Per-step logging: every train/val step appends one row to
-`loss_per_step.csv`, with both the raw (unweighted) and weighted value of
-each loss component, plus an `ico_level` column -- so that future work can
-concatenate this CSV with the equivalent ones from ico4/5/6 training and
-plot each loss component continuously across levels.
+The number of ico3 iterations is drawn at random in [MIN_ITER, MAX_ITER] at every
+training step, and fixed to VAL_REFERENCE_ITER for validation.
+
+Every train/val step is written to loss_per_step.csv (raw and weighted value of each
+loss term). finetune_train.py writes the same columns, so the CSVs of the four levels
+can be concatenated.
+
+  python -m experiments.spherical_registration.train [--out_dir runs]
 """
 
 from pathlib import Path
@@ -19,7 +21,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
-from datetime import datetime
+
 
 from experiments.spherical_registration.dataset import (
     SphereRegDataset,
@@ -30,10 +32,6 @@ from experiments.spherical_registration.network import SphereRegNet
 from experiments.spherical_registration.loss import SulcalAlignmentLoss
 
 
-# ============================================================
-# CONFIG
-# ============================================================
-
 SPLIT_DIR = "/projects/brainnet-data/subject_splits"
 BAD_SURFACES = "/projects/brainnet-data/subject_splits/bad_surfaces.json"
 
@@ -43,13 +41,14 @@ DATASETS = ["ABIDE", "ADHD200", "ADNI3", "AIBL", "Buckner40",
             "Chinese-HCP", "HCP", "OASIS3", "ISBI2015"]
 HEMI       = "lh"
 
-ICO_LEVEL  = 3   # this training stage -- stored in every row of the per-step CSV
+ICO_LEVEL  = 3   # written in the ico_level column of the step CSV
 ICO_IN     = 3
 ICO_OUT    = 3
 BASE_CH    = 32
 STEP_SIZE  = 0.01
 SPHERE_RADIUS = 100.0
 
+# iterations at ico3: random in [MIN_ITER, MAX_ITER] while training
 MIN_ITER = 15
 MAX_ITER = 40
 VAL_REFERENCE_ITER = 25
@@ -67,8 +66,7 @@ W_COUNT    = 0.0
 COUNT_TEMPERATURE = 1.0
 FOLDED_REDUCTION = "sum"
 
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-OUT_DIR = "runs"   # default; can be changed with --out_dir
+OUT_DIR = "runs"
 SAVE_EVERY = 5
 N_SAVE     = 5
 
@@ -81,10 +79,6 @@ LOSS_COMPONENTS = ["sulc", "metric", "area", "count"]
 COMPONENT_WEIGHTS = {"sulc": W_SULC, "metric": W_METRIC, "area": W_AREA, "count": W_COUNT}
 
 
-# ============================================================
-# Helpers
-# ============================================================
-
 def normalize(x: torch.Tensor, dims: tuple = None) -> torch.Tensor:
     if dims is None:
         dims = tuple(range(1, x.ndim))
@@ -93,6 +87,7 @@ def normalize(x: torch.Tensor, dims: tuple = None) -> torch.Tensor:
     return (x - mean) / std
 
 
+# mean and std of the template sulc, used to standardize the grid
 TEMPLATE_SULC_STATS = {
     "lh": {"mean": -1.1523885e-08, "std": 0.59384775},
     "rh": {"mean": -4.1938106e-09, "std":  0.5924748},
@@ -111,10 +106,6 @@ def get_template_sphere_init(hemi: str, sphere_radius: float, device) -> torch.T
     template_sphere = template_sphere.T.unsqueeze(0).float().to(device)
     return F.normalize(template_sphere, dim=1) * sphere_radius
 
-
-# ============================================================
-# Per-step loss CSV
-# ============================================================
 
 STEP_LOG_FIELDS = (
     ["ico_level", "epoch", "global_step", "split", "depth", "dataset", "subject"]
@@ -145,16 +136,13 @@ def log_step(writer, log_file, epoch, global_step, split, depth, dataset, subjec
     log_file.flush()
 
 
-# ============================================================
-# Sphere saving
-# ============================================================
-
 def save_predicted_spheres(model, loader, template_grid, template_sphere_init,
                             epoch, save_dir, n_save=N_SAVE):
     out_dir = save_dir / "spheres" / f"epoch_{epoch:03d}"
     out_dir.mkdir(parents=True, exist_ok=True)
     faces_np = model.topologies[model.ico_out].faces.cpu().numpy().astype(np.int32)
 
+    # same depth as validation, then put back what was there
     original_iter = model.n_iter[model.ico_in]
     model.n_iter[model.ico_in] = VAL_REFERENCE_ITER
 
@@ -183,10 +171,6 @@ def save_predicted_spheres(model, loader, template_grid, template_sphere_init,
     model.n_iter[model.ico_in] = original_iter
     print(f"  Saved {saved} sphere(s) -> {out_dir}")
 
-
-# ============================================================
-# Run epoch -- variable depth, NO rotation
-# ============================================================
 
 def run_epoch(model, loader, criterion, template_grid, template_sphere_init,
               optimizer, epoch, step_state, step_writer, step_log_file,
@@ -229,6 +213,7 @@ def run_epoch(model, loader, criterion, template_grid, template_sphere_init,
                 ref_verts_metric=wm_verts[:, :, :n_out],
             )
 
+            # skip the step if something went NaN instead of breaking the weights
             if torch.isnan(loss_dict["total"]) or torch.isnan(r).any():
                 if is_train:
                     optimizer.zero_grad()
@@ -265,10 +250,6 @@ def run_epoch(model, loader, criterion, template_grid, template_sphere_init,
         result["_depth_mean"] = float(np.mean(sampled_depths))
     return result
 
-
-# ============================================================
-# Main
-# ============================================================
 
 def main():
     parser = argparse.ArgumentParser(description="Train the ico3 network.")
@@ -312,11 +293,10 @@ def main():
         optimizer, mode="min", factor=0.5, patience=3, threshold=1e-3, min_lr=1e-7,
     )
 
-    # --- Per-step CSV: raw + weighted value of every loss component, every step ---
     step_log_file, step_writer = open_step_log(save_dir / "loss_per_step.csv")
     step_state = {"train": 0, "val": 0}
 
-    # --- Per-epoch history, for the summary plots (raw AND weighted) ---
+    # per-epoch values for the plots at the end
     train_total_hist, val_total_hist, val_epochs = [], [], []
     train_raw_hist = {c: [] for c in LOSS_COMPONENTS}
     train_weighted_hist = {c: [] for c in LOSS_COMPONENTS}
@@ -351,12 +331,10 @@ def main():
             val_raw_hist[c].append(val_metrics[c])
             val_weighted_hist[c].append(COMPONENT_WEIGHTS[c] * val_metrics[c])
 
-        print(f"Epoch {epoch:3d}  train_total={train_metrics['total']:.4f} "
-              f"(depth mean={train_metrics.get('_depth_mean', float('nan')):.1f})  "
-              f"val_total(depth={VAL_REFERENCE_ITER})={val_metrics['total']:.4f}")
+        print(f"Epoch {epoch:3d}  train {train_metrics['total']:.4f}  val {val_metrics['total']:.4f}")
 
         if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
-            print(f"EARLY STOPPING at epoch {epoch}")
+            print(f"Early stopping at epoch {epoch}")
             break
 
         if val_metrics["total"] < best_val_total - EARLY_STOPPING_MIN_DELTA:
@@ -368,7 +346,7 @@ def main():
                 "min_iter": MIN_ITER, "max_iter": MAX_ITER,
                 "val_reference_iter": VAL_REFERENCE_ITER,
             }, save_dir / "best_val_total.pt")
-            print(f"  >>> New best: {best_val_total:.4f}")
+            print(f"  best so far ({best_val_total:.4f}), checkpoint saved")
         else:
             epochs_without_improvement += 1
 
@@ -379,10 +357,6 @@ def main():
 
     step_log_file.close()
     print(f"\nPer-step loss log -> {save_dir / 'loss_per_step.csv'}")
-
-    # ============================================================
-    # Plots (English)
-    # ============================================================
 
     epochs_range = range(1, len(train_total_hist) + 1)
 
